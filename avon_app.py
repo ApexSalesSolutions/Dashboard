@@ -2750,19 +2750,28 @@ try:
     if not df_winbacks.empty:
         df_winbacks = df_winbacks.sort_values('Καμπάνιες Απουσίας', ascending=False).reset_index(drop=True)
 
-    tabs = st.tabs([
-        "🧠 AI Advisor & Analytics",
-        "🔥 Smart Rank", 
-        f"⏳ Προς Τιμολόγηση ({len(df_pros_timologisi)})", 
-        f"🚚 Τιμολογημένες ({len(df_billed_only)})", 
-        f"📞 Εκκρεμείς ({len(df_call_list_ekkremeis)})", 
-        f"⚠️ Διαγραφές ({len(df_rem_clean)})", 
-        f"💎 Καλές Διαγραφές Ιστορικού ({len(df_good_past_removals)})",
-        f"🎉 Additions ({len(df_winbacks)})",
-        "⭐ Σήμερα",
-        f"⚙️ Adjustments ({len(df_adjustments)})",
-        f"🏦 Πιστωτικός Έλεγχος ({len(df_empty_status)})",
-    ])
+    # === Δυναμική λίστα tabs — στη Λειτουργία Βοηθού, τα μη-διαθέσιμα tabs
+    # (AI Advisor, Προς Τιμολόγηση, Τιμολογημένες, Additions, Adjustments) ΔΕΝ
+    # εμφανίζονται καν στη μπάρα — όχι απλώς "κλειδωμένα" μέσα τους. Το tab_idx
+    # χαρτογραφεί συμβολικό όνομα → πραγματική θέση στο tabs[], που αλλάζει
+    # ανάλογα με το ποια tabs συμπεριλαμβάνονται.
+    _tab_defs = [
+        ('ai_advisor',    "🧠 AI Advisor & Analytics",                              False),
+        ('smart_rank',    "🔥 Smart Rank",                                          True),
+        ('pending',       f"⏳ Προς Τιμολόγηση ({len(df_pros_timologisi)})",         False),
+        ('billed',        f"🚚 Τιμολογημένες ({len(df_billed_only)})",               False),
+        ('ekkremeis',     f"📞 Εκκρεμείς ({len(df_call_list_ekkremeis)})",           True),
+        ('removals',      f"⚠️ Διαγραφές ({len(df_rem_clean)})",                    True),
+        ('good_removals', f"💎 Καλές Διαγραφές Ιστορικού ({len(df_good_past_removals)})", True),
+        ('additions',     f"🎉 Additions ({len(df_winbacks)})",                     False),
+        ('today',         "⭐ Σήμερα",                                              True),
+        ('adjustments',   f"⚙️ Adjustments ({len(df_adjustments)})",                False),
+        ('credit_check',  f"🏦 Πιστωτικός Έλεγχος ({len(df_empty_status)})",        True),
+    ]
+    _visible_tab_defs = [t for t in _tab_defs if (t[2] or not is_assistant_mode)]
+    tab_idx = {key: i for i, (key, _, _) in enumerate(_visible_tab_defs)}
+    tabs = st.tabs([label for _, label, _ in _visible_tab_defs])
+
 
     def render_list(df, context, show_notes=False):
         search_q = st.text_input("🔍 Αναζήτηση", key=f"search_{context}", placeholder="Πληκτρολόγησε όνομα...")
@@ -2829,51 +2838,56 @@ try:
                         mark_contacted(row_key)
                         st.rerun()
 
-    with tabs[0]:
-        if is_assistant_mode:
-            st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (στόχοι/οικονομικά στοιχεία).")
-        else:
-            st.subheader("🤖 AI Tactical Advisor")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("#### Στρατηγική Ημέρας")
-                if target_val > 0:
-                    if final_forecast > target_val * 1.05:
-                        st.success("Το ML μοντέλο δείχνει ότι ο στόχος έχει **ασφαλίσει**. Η πιθανότητα επιτυχίας είναι άνω του 95%. Επικεντρωθείτε σε upsells για ρεκόρ πωλήσεων.")
-                    elif final_forecast > target_val:
-                        st.info("Το ML μοντέλο δείχνει οριακή επιτυχία στόχου. Απαιτείται στενή παρακολούθηση των εκκρεμών παραγγελιών.")
-                    else:
-                        st.warning(f"Κίνδυνος Στόχου! Το ML μοντέλο προβλέπει έλλειμμα {target_val - final_forecast:,.0f}€. Πρέπει να ενεργοποιηθούν άμεσα πελάτες με υψηλό Propensity Score.")
-                churn_risk = df_potentials[df_potentials['NameClean'].apply(lambda n: member_predictions.get(n, {}).get('ml_prob', 1) < 0.3 and member_predictions.get(n, {}).get('predicted', 0) > 100)]
-                if not churn_risk.empty:
-                    names = ", ".join(churn_risk['Ονοματεπώνυμο'].head(3))
-                    st.error(f"**Κίνδυνος Διαρροής (High Value):** {names}. Έχουν κάτω από 30% πιθανότητα να παραγγείλουν βάσει του αλγορίθμου.")
-                upsell = df_potentials[df_potentials['NameClean'].apply(lambda n: member_predictions.get(n, {}).get('ml_prob', 0) > 0.75 and member_predictions.get(n, {}).get('predicted', 0) < 50)]
-                if not upsell.empty:
-                    st.success(f"**Ευκαιρίες Upsell:** Εντοπίστηκαν {len(upsell)} μέλη με σίγουρη παραγγελία αλλά χαμηλό καλάθι. Προτείνετε προσφορές!")
-            with c2:
-                st.markdown("#### 🎯 VIP Propensity Matrix")
-                scatter_data = []
-                for _, r in df_potentials.iterrows():
-                    n = r['NameClean']
-                    p = member_predictions.get(n, {})
-                    prob = p.get('ml_prob', 0)
-                    val = p.get('predicted', 0)
-                    if val > 30:
-                        scatter_data.append({'Name': r['Ονοματεπώνυμο'], 'Value': val, 'Probability': prob * 100, 'Tier': r['Tier']})
-                if scatter_data:
-                    df_sc = pd.DataFrame(scatter_data)
-                    fig_scatter = px.scatter(df_sc, x="Value", y="Probability", color="Tier",
-                                             hover_name="Name", template="plotly_dark",
-                                             labels={"Value": "Αναμενόμενη Αξία (€)", "Probability": "Πιθανότητα (ML %)"})
-                    fig_scatter.update_traces(marker=dict(size=12, opacity=0.7, line=dict(width=1, color='DarkSlateGrey')))
-                    fig_scatter.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
-                    st.plotly_chart(fig_scatter, use_container_width=True)
+    if 'ai_advisor' in tab_idx:
+        with tabs[tab_idx['ai_advisor']]:
+            if is_assistant_mode:
+                st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (στόχοι/οικονομικά στοιχεία).")
+            else:
+                st.subheader("🤖 AI Tactical Advisor")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("#### Στρατηγική Ημέρας")
+                    if target_val > 0:
+                        if final_forecast > target_val * 1.05:
+                            st.success("Το ML μοντέλο δείχνει ότι ο στόχος έχει **ασφαλίσει**. Η πιθανότητα επιτυχίας είναι άνω του 95%. Επικεντρωθείτε σε upsells για ρεκόρ πωλήσεων.")
+                        elif final_forecast > target_val:
+                            st.info("Το ML μοντέλο δείχνει οριακή επιτυχία στόχου. Απαιτείται στενή παρακολούθηση των εκκρεμών παραγγελιών.")
+                        else:
+                            st.warning(f"Κίνδυνος Στόχου! Το ML μοντέλο προβλέπει έλλειμμα {target_val - final_forecast:,.0f}€. Πρέπει να ενεργοποιηθούν άμεσα πελάτες με υψηλό Propensity Score.")
+                    churn_risk = df_potentials[df_potentials['NameClean'].apply(lambda n: member_predictions.get(n, {}).get('ml_prob', 1) < 0.3 and member_predictions.get(n, {}).get('predicted', 0) > 100)]
+                    if not churn_risk.empty:
+                        names = ", ".join(churn_risk['Ονοματεπώνυμο'].head(3))
+                        st.error(f"**Κίνδυνος Διαρροής (High Value):** {names}. Έχουν κάτω από 30% πιθανότητα να παραγγείλουν βάσει του αλγορίθμου.")
+                    upsell = df_potentials[df_potentials['NameClean'].apply(lambda n: member_predictions.get(n, {}).get('ml_prob', 0) > 0.75 and member_predictions.get(n, {}).get('predicted', 0) < 50)]
+                    if not upsell.empty:
+                        st.success(f"**Ευκαιρίες Upsell:** Εντοπίστηκαν {len(upsell)} μέλη με σίγουρη παραγγελία αλλά χαμηλό καλάθι. Προτείνετε προσφορές!")
+                with c2:
+                    st.markdown("#### 🎯 VIP Propensity Matrix")
+                    scatter_data = []
+                    for _, r in df_potentials.iterrows():
+                        n = r['NameClean']
+                        p = member_predictions.get(n, {})
+                        prob = p.get('ml_prob', 0)
+                        val = p.get('predicted', 0)
+                        if val > 30:
+                            scatter_data.append({'Name': r['Ονοματεπώνυμο'], 'Value': val, 'Probability': prob * 100, 'Tier': r['Tier']})
+                    if scatter_data:
+                        df_sc = pd.DataFrame(scatter_data)
+                        fig_scatter = px.scatter(df_sc, x="Value", y="Probability", color="Tier",
+                                                 hover_name="Name", template="plotly_dark",
+                                                 labels={"Value": "Αναμενόμενη Αξία (€)", "Probability": "Πιθανότητα (ML %)"})
+                        fig_scatter.update_traces(marker=dict(size=12, opacity=0.7, line=dict(width=1, color='DarkSlateGrey')))
+                        fig_scatter.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
+                        st.plotly_chart(fig_scatter, use_container_width=True)
 
+    # ΚΡΙΣΙΜΟ: αυτές οι δύο γραμμές ΔΕΝ ανήκουν στο tab "AI Advisor" — είναι
+    # προετοιμασία δεδομένων για το tab "Smart Rank" που ακολουθεί, και πρέπει
+    # να εκτελούνται ΠΑΝΤΑ (ακόμα κι όταν το AI Advisor tab είναι κρυμμένο σε
+    # λειτουργία βοηθού), αλλιώς το Smart Rank σκάει με NameError.
     df_potentials_returning = df_potentials[df_potentials['NameClean'].isin(member_predictions.keys())]
     df_potentials_new       = df_potentials[~df_potentials['NameClean'].isin(member_predictions.keys())]
 
-    with tabs[1]:
+    with tabs[tab_idx['smart_rank']]:
         sr1, sr2 = st.tabs([
             f"📋 Με Ιστορικό ({len(df_potentials_returning)})",
             f"🆕 Νέα Μέλη ({len(df_potentials_new)})"
@@ -2884,86 +2898,88 @@ try:
             st.caption("⚠️ Χωρίς ιστορικό — πρόβλεψη βασισμένη σε tier μέσο όρο.")
             render_list(df_potentials_new.head(40), "smart_new", show_notes=True)
 
-    with tabs[2]:
-        if is_assistant_mode:
-            st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (οικονομικά στοιχεία).")
-        elif not df_pros_timologisi.empty:
-            df_disp = df_pros_timologisi.copy()
-            df_disp['Εκτίμηση'] = df_disp.apply(lambda r: r['Ποσό_Net'] if r['Ποσό_Net'] > 0 else get_smart_value(r['NameClean'], r['Ονοματεπώνυμο']), axis=1)
-            st.dataframe(
-                df_disp[['Ονοματεπώνυμο', 'Ποσό_Net', 'Εκτίμηση', 'Τηλέφωνο']],
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "Εκτίμηση": st.column_config.ProgressColumn("Εκτίμηση Αξίας (€)", help="Πιθανή αξία", format="%.0f", min_value=0, max_value=600),
-                    "Ποσό_Net": st.column_config.NumberColumn("Τρέχον Ποσό (€)", format="%.2f €")
-                }
-            )
-        else:
-            st.info("Καμία παραγγελία σε αναμονή στο σύστημα.")
+    if 'pending' in tab_idx:
+        with tabs[tab_idx['pending']]:
+            if is_assistant_mode:
+                st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (οικονομικά στοιχεία).")
+            elif not df_pros_timologisi.empty:
+                df_disp = df_pros_timologisi.copy()
+                df_disp['Εκτίμηση'] = df_disp.apply(lambda r: r['Ποσό_Net'] if r['Ποσό_Net'] > 0 else get_smart_value(r['NameClean'], r['Ονοματεπώνυμο']), axis=1)
+                st.dataframe(
+                    df_disp[['Ονοματεπώνυμο', 'Ποσό_Net', 'Εκτίμηση', 'Τηλέφωνο']],
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Εκτίμηση": st.column_config.ProgressColumn("Εκτίμηση Αξίας (€)", help="Πιθανή αξία", format="%.0f", min_value=0, max_value=600),
+                        "Ποσό_Net": st.column_config.NumberColumn("Τρέχον Ποσό (€)", format="%.2f €")
+                    }
+                )
+            else:
+                st.info("Καμία παραγγελία σε αναμονή στο σύστημα.")
 
-    with tabs[3]:
-        if is_assistant_mode:
-            st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (οικονομικά στοιχεία).")
-        else:
-            max_val = float(df_billed_only['Ποσό_Net'].max() if not df_billed_only.empty else 600)
+    if 'billed' in tab_idx:
+        with tabs[tab_idx['billed']]:
+            if is_assistant_mode:
+                st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (οικονομικά στοιχεία).")
+            else:
+                max_val = float(df_billed_only['Ποσό_Net'].max() if not df_billed_only.empty else 600)
 
-            # Feature 1: Member Score Card — κάνεις κλικ σε μέλος και βλέπεις το πλήρες ιστορικό
-            sc_search = st.text_input("🔍 Αναζήτηση μέλους", key="sc_search", placeholder="Πληκτρολόγησε όνομα...")
-            df_billed_disp = df_billed_only.copy()
-            if sc_search:
-                df_billed_disp = df_billed_disp[df_billed_disp['Ονοματεπώνυμο'].str.contains(sc_search, case=False, na=False)]
+                # Feature 1: Member Score Card — κάνεις κλικ σε μέλος και βλέπεις το πλήρες ιστορικό
+                sc_search = st.text_input("🔍 Αναζήτηση μέλους", key="sc_search", placeholder="Πληκτρολόγησε όνομα...")
+                df_billed_disp = df_billed_only.copy()
+                if sc_search:
+                    df_billed_disp = df_billed_disp[df_billed_disp['Ονοματεπώνυμο'].str.contains(sc_search, case=False, na=False)]
 
-            for _, row in df_billed_disp.sort_values('Ποσό_Net', ascending=False).iterrows():
-                n = row['NameClean']
-                label = f"**{row['Ονοματεπώνυμο']}** — {row['Ποσό_Net']:,.0f}€"
-                with st.expander(label, expanded=False):
-                    sc1, sc2, sc3 = st.columns(3)
+                for _, row in df_billed_disp.sort_values('Ποσό_Net', ascending=False).iterrows():
+                    n = row['NameClean']
+                    label = f"**{row['Ονοματεπώνυμο']}** — {row['Ποσό_Net']:,.0f}€"
+                    with st.expander(label, expanded=False):
+                        sc1, sc2, sc3 = st.columns(3)
 
-                    # Ιστορικό παραγγελιών ανά καμπάνια
-                    hist_entries = history_detailed.get(n, [])
-                    hist_vals = [e['net_value'] for e in sorted(hist_entries, key=lambda x: x['period_idx'])]
-                    hist_camps_member = historical_camps[:len(hist_vals)]
+                        # Ιστορικό παραγγελιών ανά καμπάνια
+                        hist_entries = history_detailed.get(n, [])
+                        hist_vals = [e['net_value'] for e in sorted(hist_entries, key=lambda x: x['period_idx'])]
+                        hist_camps_member = historical_camps[:len(hist_vals)]
 
-                    sc1.metric("📦 Καμπάνιες", f"{len(hist_vals)}/{len(historical_camps)}")
-                    sc2.metric("💰 Μέσο Καλάθι", f"{np.mean(hist_vals):,.0f}€" if hist_vals else "—")
-                    sc3.metric("🏆 Best", f"{max(hist_vals):,.0f}€" if hist_vals else "—")
+                        sc1.metric("📦 Καμπάνιες", f"{len(hist_vals)}/{len(historical_camps)}")
+                        sc2.metric("💰 Μέσο Καλάθι", f"{np.mean(hist_vals):,.0f}€" if hist_vals else "—")
+                        sc3.metric("🏆 Best", f"{max(hist_vals):,.0f}€" if hist_vals else "—")
 
-                    pred = member_predictions.get(n, {})
-                    if pred:
-                        p1, p2, p3 = st.columns(3)
-                        tf = pred.get('trend_factor', 0)
-                        trend_lbl = "↑ Ανοδικό" if tf > 0.05 else ("↓ Καθοδικό" if tf < -0.05 else "→ Σταθερό")
-                        p1.metric("📈 Τάση", trend_lbl)
-                        p2.metric("🎯 Αξιοπιστία", f"{pred.get('reliability',0):.0%}")
-                        p3.metric("🤖 Πιθανότητα", f"{pred.get('ml_prob',0):.0%}")
+                        pred = member_predictions.get(n, {})
+                        if pred:
+                            p1, p2, p3 = st.columns(3)
+                            tf = pred.get('trend_factor', 0)
+                            trend_lbl = "↑ Ανοδικό" if tf > 0.05 else ("↓ Καθοδικό" if tf < -0.05 else "→ Σταθερό")
+                            p1.metric("📈 Τάση", trend_lbl)
+                            p2.metric("🎯 Αξιοπιστία", f"{pred.get('reliability',0):.0%}")
+                            p3.metric("🤖 Πιθανότητα", f"{pred.get('ml_prob',0):.0%}")
 
-                    # Streak (συνεχόμενες καμπάνιες)
-                    if hist_vals:
-                        streak = 0
-                        for v in reversed(hist_vals):
-                            if v > 0: streak += 1
-                            else: break
-                        st.caption(f"🔥 Streak: {streak} συνεχόμενες καμπάνιες | Tier: {row.get('_Tier','—')} | {tier_upgrade_notes.get(n,'')}")
+                        # Streak (συνεχόμενες καμπάνιες)
+                        if hist_vals:
+                            streak = 0
+                            for v in reversed(hist_vals):
+                                if v > 0: streak += 1
+                                else: break
+                            st.caption(f"🔥 Streak: {streak} συνεχόμενες καμπάνιες | Tier: {row.get('_Tier','—')} | {tier_upgrade_notes.get(n,'')}")
 
-                    # Mini sparkline ιστορικού
-                    if len(hist_vals) >= 2:
-                        fig_mini = go.Figure(go.Scatter(
-                            x=list(range(len(hist_vals))), y=hist_vals,
-                            mode='lines+markers', line=dict(color='#ff69b4', width=2),
-                            marker=dict(size=6), fill='tozeroy',
-                            fillcolor='rgba(255,105,180,0.1)'
-                        ))
-                        fig_mini.update_layout(
-                            height=100, margin=dict(l=0,r=0,t=0,b=0),
-                            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
-                            plot_bgcolor='rgba(0,0,0,0)', showlegend=False,
-                            xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=True)
-                        )
-                        st.plotly_chart(fig_mini, use_container_width=True)
+                        # Mini sparkline ιστορικού
+                        if len(hist_vals) >= 2:
+                            fig_mini = go.Figure(go.Scatter(
+                                x=list(range(len(hist_vals))), y=hist_vals,
+                                mode='lines+markers', line=dict(color='#ff69b4', width=2),
+                                marker=dict(size=6), fill='tozeroy',
+                                fillcolor='rgba(255,105,180,0.1)'
+                            ))
+                            fig_mini.update_layout(
+                                height=100, margin=dict(l=0,r=0,t=0,b=0),
+                                template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
+                                plot_bgcolor='rgba(0,0,0,0)', showlegend=False,
+                                xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=True)
+                            )
+                            st.plotly_chart(fig_mini, use_container_width=True)
 
-    with tabs[4]: render_list(df_call_list_ekkremeis, "todo", show_notes=True)
+    with tabs[tab_idx['ekkremeis']]: render_list(df_call_list_ekkremeis, "todo", show_notes=True)
 
-    with tabs[5]:
+    with tabs[tab_idx['removals']]:
         st.caption("📊 Ταξινομημένες με τις πιο **ελπιδοφόρες** πρώτα (πιθανότητα × εκτιμώμενη αξία).")
         if not df_rem_clean.empty:
             high_hope = df_rem_clean[df_rem_clean['ReturnProb'] >= 0.5]
@@ -2971,7 +2987,7 @@ try:
                 st.success(f"🎯 {len(high_hope)} μέλη με **πάνω από 50% πιθανότητα** να ξαναπαραγγείλουν — ξεκίνα από αυτές.")
         render_list(df_rem_clean, "rem", show_notes=True)
 
-    with tabs[6]:
+    with tabs[tab_idx['good_removals']]:
         st.caption(
             f"💎 Ίδια φιλοσοφία με τα Additions: μέλη χωρίς παραγγελία τις τελευταίες "
             f"**{MIN_ABSENCE_STREAK}+ καμπάνιες**, με αξιόλογο ιστορικό (2+ παραγγελίες, καλάθι τουλάχιστον "
@@ -3028,166 +3044,167 @@ try:
                             mark_contacted(row_key)
                             st.rerun()
 
-    with tabs[7]:
-        st.caption(
-            f"🎉 Μέλη χωρίς παραγγελία τις τελευταίες **{MIN_ABSENCE_STREAK}+ καμπάνιες** (συμπεριλαμβανομένων "
-            "όσων δεν έχουν καθόλου καταγεγραμμένο ιστορικό — π.χ. New Business) που **ΤΩΡΑ έβαλαν "
-            "παραγγελία**. Καλή ευκαιρία να τα κρατήσεις ενεργά."
-        )
+    if 'additions' in tab_idx:
+        with tabs[tab_idx['additions']]:
+            st.caption(
+                f"🎉 Μέλη χωρίς παραγγελία τις τελευταίες **{MIN_ABSENCE_STREAK}+ καμπάνιες** (συμπεριλαμβανομένων "
+                "όσων δεν έχουν καθόλου καταγεγραμμένο ιστορικό — π.χ. New Business) που **ΤΩΡΑ έβαλαν "
+                "παραγγελία**. Καλή ευκαιρία να τα κρατήσεις ενεργά."
+            )
 
-        if not is_assistant_mode:
-            with st.expander("🔬 Διαγνωστικά Win-Backs (debug)", expanded=False):
-                st.caption(f"historical_camps (πλήθος): {len(historical_camps)} | last_period_idx: {len(historical_camps)-1}")
-                st.caption(f"names_with_any_order (σύνολο): {len(names_with_any_order)} | real_billed_names: {len(real_billed_names)} | pros_timologisi_names: {len(pros_timologisi_names)}")
+            if not is_assistant_mode:
+                with st.expander("🔬 Διαγνωστικά Win-Backs (debug)", expanded=False):
+                    st.caption(f"historical_camps (πλήθος): {len(historical_camps)} | last_period_idx: {len(historical_camps)-1}")
+                    st.caption(f"names_with_any_order (σύνολο): {len(names_with_any_order)} | real_billed_names: {len(real_billed_names)} | pros_timologisi_names: {len(pros_timologisi_names)}")
 
-                # --- Αναζήτηση συγκεκριμένου ονόματος σε ΟΛΕΣ τις πηγές δεδομένων ---
-                name_probe = st.text_input("🔎 Έλεγξε συγκεκριμένο όνομα (π.χ. ΣΑΜΕΡΚΑ)", key="winback_name_probe")
-                if name_probe:
-                    probe_clean = smart_clean_name(name_probe)
-                    st.code(f"Κανονικοποιημένο: '{probe_clean}'")
+                    # --- Αναζήτηση συγκεκριμένου ονόματος σε ΟΛΕΣ τις πηγές δεδομένων ---
+                    name_probe = st.text_input("🔎 Έλεγξε συγκεκριμένο όνομα (π.χ. ΣΑΜΕΡΚΑ)", key="winback_name_probe")
+                    if name_probe:
+                        probe_clean = smart_clean_name(name_probe)
+                        st.code(f"Κανονικοποιημένο: '{probe_clean}'")
 
-                    # Βρες πιθανά matches με "περιέχει" αντί ακριβές match (πιάνει τυχόν διαφορές)
-                    probe_tokens = set(probe_clean.split())
-                    all_names_pool = set(df_members_raw['NameClean']) | set(history_detailed.keys()) | set(df_curr['NameClean'])
-                    fuzzy_matches = [nm for nm in all_names_pool if probe_tokens & set(nm.split())]
+                        # Βρες πιθανά matches με "περιέχει" αντί ακριβές match (πιάνει τυχόν διαφορές)
+                        probe_tokens = set(probe_clean.split())
+                        all_names_pool = set(df_members_raw['NameClean']) | set(history_detailed.keys()) | set(df_curr['NameClean'])
+                        fuzzy_matches = [nm for nm in all_names_pool if probe_tokens & set(nm.split())]
 
-                    if not fuzzy_matches:
-                        st.warning("Δεν βρέθηκε καμία εγγραφή με αυτά τα tokens πουθενά (μέλη, ιστορικό, ή τρέχουσα καμπάνια).")
-                    for fm in fuzzy_matches:
-                        st.markdown(f"**Match: `{fm}`**")
-                        in_members   = fm in set(df_members_raw['NameClean'])
-                        in_history   = fm in history_detailed
-                        in_billed    = fm in real_billed_names
-                        in_pending   = fm in pros_timologisi_names
-                        in_curr      = fm in set(df_curr['NameClean'])
-                        st.write(
-                            f"- Στη λίστα μελών (Φύλλο 1, τρέχουσα): {'✅' if in_members else '❌'}\n"
-                            f"- Έχει ιστορικό (history_detailed): {'✅' if in_history else '❌'}\n"
-                            f"- Στο df_curr (τρέχουσα καμπάνια, raw): {'✅' if in_curr else '❌'}\n"
-                            f"- Είναι Τιμολογημένη (real_billed_names): {'✅' if in_billed else '❌'}\n"
-                            f"- Είναι Προς Τιμολόγηση (pros_timologisi_names): {'✅' if in_pending else '❌'}"
-                        )
-                        if in_history:
-                            ent = sorted(history_detailed[fm], key=lambda x: x['period_idx'])
-                            st.write(f"  Ιστορικές περίοδοι: {[(e['period_idx'], round(e['net_value'])) for e in ent]}")
-                            last_act = max(e['period_idx'] for e in ent)
-                            st.write(f"  last_active_period={last_act} | υπολογισμένη απουσία={len(historical_camps)-1-last_act}")
-                        if in_curr:
-                            rows = df_curr[df_curr['NameClean'] == fm][['Status_Clean', 'Ποσό_Net']]
-                            st.dataframe(rows, use_container_width=True, hide_index=True)
-                    st.divider()
+                        if not fuzzy_matches:
+                            st.warning("Δεν βρέθηκε καμία εγγραφή με αυτά τα tokens πουθενά (μέλη, ιστορικό, ή τρέχουσα καμπάνια).")
+                        for fm in fuzzy_matches:
+                            st.markdown(f"**Match: `{fm}`**")
+                            in_members   = fm in set(df_members_raw['NameClean'])
+                            in_history   = fm in history_detailed
+                            in_billed    = fm in real_billed_names
+                            in_pending   = fm in pros_timologisi_names
+                            in_curr      = fm in set(df_curr['NameClean'])
+                            st.write(
+                                f"- Στη λίστα μελών (Φύλλο 1, τρέχουσα): {'✅' if in_members else '❌'}\n"
+                                f"- Έχει ιστορικό (history_detailed): {'✅' if in_history else '❌'}\n"
+                                f"- Στο df_curr (τρέχουσα καμπάνια, raw): {'✅' if in_curr else '❌'}\n"
+                                f"- Είναι Τιμολογημένη (real_billed_names): {'✅' if in_billed else '❌'}\n"
+                                f"- Είναι Προς Τιμολόγηση (pros_timologisi_names): {'✅' if in_pending else '❌'}"
+                            )
+                            if in_history:
+                                ent = sorted(history_detailed[fm], key=lambda x: x['period_idx'])
+                                st.write(f"  Ιστορικές περίοδοι: {[(e['period_idx'], round(e['net_value'])) for e in ent]}")
+                                last_act = max(e['period_idx'] for e in ent)
+                                st.write(f"  last_active_period={last_act} | υπολογισμένη απουσία={len(historical_camps)-1-last_act}")
+                            if in_curr:
+                                rows = df_curr[df_curr['NameClean'] == fm][['Status_Clean', 'Ποσό_Net']]
+                                st.dataframe(rows, use_container_width=True, hide_index=True)
+                        st.divider()
 
-                    # === Έλεγχος raw ιστορικού sheet (πριν την ομαδοποίηση) για πιθανές
-                    # παραλλαγές ονόματος που δεν ταυτοποιήθηκαν με το NameClean ===
-                    st.markdown("**Αναζήτηση σε ΟΛΟ το df_sales_all (raw, με όλες τις καμπάνιες) — πιθανές παραλλαγές:**")
-                    raw_token_matches = df_sales_all[
-                        df_sales_all['NameClean'].apply(lambda x: bool(probe_tokens & set(str(x).split())))
-                    ]
-                    if raw_token_matches.empty:
-                        st.warning("Καμία γραμμή στο raw sales sheet δεν ταιριάζει με αυτά τα tokens — πιθανώς διαφορετική γραφή ονόματος στο Excel.")
-                    else:
-                        distinct_raw_names = raw_token_matches['NameClean'].unique()
-                        st.write(f"Βρέθηκαν {len(distinct_raw_names)} διαφορετικές παραλλαγές NameClean στο raw sheet:")
-                        for rn in distinct_raw_names:
-                            camp_list = sorted(raw_token_matches[raw_token_matches['NameClean'] == rn][camp_col].unique())
-                            st.write(f"  • `{rn}` — εμφανίζεται σε καμπάνιες: {camp_list}")
-
-                diag_rows = []
-                for n in names_with_any_order:
-                    entries = history_detailed.get(n, [])
-                    entry_periods = {e['period_idx'] for e in entries}
-                    if not entry_periods:
-                        reason = "Κανένα ιστορικό (νέο μέλος)"
-                        absence_len = None
-                    else:
-                        last_active = max(entry_periods)
-                        absence_len = (len(historical_camps) - 1) - last_active
-                        if absence_len < MIN_ABSENCE_STREAK:
-                            reason = f"Απουσία μόνο {absence_len} < {MIN_ABSENCE_STREAK}"
+                        # === Έλεγχος raw ιστορικού sheet (πριν την ομαδοποίηση) για πιθανές
+                        # παραλλαγές ονόματος που δεν ταυτοποιήθηκαν με το NameClean ===
+                        st.markdown("**Αναζήτηση σε ΟΛΟ το df_sales_all (raw, με όλες τις καμπάνιες) — πιθανές παραλλαγές:**")
+                        raw_token_matches = df_sales_all[
+                            df_sales_all['NameClean'].apply(lambda x: bool(probe_tokens & set(str(x).split())))
+                        ]
+                        if raw_token_matches.empty:
+                            st.warning("Καμία γραμμή στο raw sales sheet δεν ταιριάζει με αυτά τα tokens — πιθανώς διαφορετική γραφή ονόματος στο Excel.")
                         else:
-                            is_billed = n in real_billed_names
-                            is_pending = n in pros_timologisi_names
-                            if not (is_billed or is_pending):
-                                reason = "Δεν είναι ούτε billed ούτε pending"
+                            distinct_raw_names = raw_token_matches['NameClean'].unique()
+                            st.write(f"Βρέθηκαν {len(distinct_raw_names)} διαφορετικές παραλλαγές NameClean στο raw sheet:")
+                            for rn in distinct_raw_names:
+                                camp_list = sorted(raw_token_matches[raw_token_matches['NameClean'] == rn][camp_col].unique())
+                                st.write(f"  • `{rn}` — εμφανίζεται σε καμπάνιες: {camp_list}")
+
+                    diag_rows = []
+                    for n in names_with_any_order:
+                        entries = history_detailed.get(n, [])
+                        entry_periods = {e['period_idx'] for e in entries}
+                        if not entry_periods:
+                            reason = "Κανένα ιστορικό (νέο μέλος)"
+                            absence_len = None
+                        else:
+                            last_active = max(entry_periods)
+                            absence_len = (len(historical_camps) - 1) - last_active
+                            if absence_len < MIN_ABSENCE_STREAK:
+                                reason = f"Απουσία μόνο {absence_len} < {MIN_ABSENCE_STREAK}"
                             else:
-                                curr_val = 0.0
-                                if is_billed:
-                                    b_row = df_billed_only[df_billed_only['NameClean'] == n]
-                                    curr_val = b_row['Ποσό_Net'].sum() if not b_row.empty else 0.0
-                                if curr_val <= 0 and is_pending:
-                                    p_row = df_pros_timologisi[df_pros_timologisi['NameClean'] == n]
-                                    curr_val = p_row['Ποσό_Net'].sum() if not p_row.empty else 0.0
-                                reason = "✅ ΠΕΡΝΑΕΙ" if curr_val > 0 else f"curr_val={curr_val} (≤0)"
-                    orig = df_members_raw[df_members_raw['NameClean'] == n]['Ονοματεπώνυμο']
-                    orig = orig.iloc[0] if not orig.empty else n
-                    diag_rows.append({'Όνομα': orig, 'Απουσία': absence_len, 'Λόγος': reason})
+                                is_billed = n in real_billed_names
+                                is_pending = n in pros_timologisi_names
+                                if not (is_billed or is_pending):
+                                    reason = "Δεν είναι ούτε billed ούτε pending"
+                                else:
+                                    curr_val = 0.0
+                                    if is_billed:
+                                        b_row = df_billed_only[df_billed_only['NameClean'] == n]
+                                        curr_val = b_row['Ποσό_Net'].sum() if not b_row.empty else 0.0
+                                    if curr_val <= 0 and is_pending:
+                                        p_row = df_pros_timologisi[df_pros_timologisi['NameClean'] == n]
+                                        curr_val = p_row['Ποσό_Net'].sum() if not p_row.empty else 0.0
+                                    reason = "✅ ΠΕΡΝΑΕΙ" if curr_val > 0 else f"curr_val={curr_val} (≤0)"
+                        orig = df_members_raw[df_members_raw['NameClean'] == n]['Ονοματεπώνυμο']
+                        orig = orig.iloc[0] if not orig.empty else n
+                        diag_rows.append({'Όνομα': orig, 'Απουσία': absence_len, 'Λόγος': reason})
 
-                df_diag = pd.DataFrame(diag_rows)
-                # Δείξε μόνο όσα έχουν τουλάχιστον κάποιο ιστορικό (πιο σχετικά για debug)
-                df_diag_relevant = df_diag[df_diag['Απουσία'].notna()].sort_values('Απουσία', ascending=False)
-                st.dataframe(df_diag_relevant, use_container_width=True, hide_index=True)
+                    df_diag = pd.DataFrame(diag_rows)
+                    # Δείξε μόνο όσα έχουν τουλάχιστον κάποιο ιστορικό (πιο σχετικά για debug)
+                    df_diag_relevant = df_diag[df_diag['Απουσία'].notna()].sort_values('Απουσία', ascending=False)
+                    st.dataframe(df_diag_relevant, use_container_width=True, hide_index=True)
 
-        if df_winbacks.empty:
-            st.info("Δεν εντοπίστηκαν επανατοποθετήσεις σε αυτή την καμπάνια (ή δεν υπάρχουν αρκετές ιστορικές καμπάνιες για σύγκριση).")
-        else:
-            n_unknown_duration = int((~df_winbacks['Ακριβές Διάστημα']).sum()) if 'Ακριβές Διάστημα' in df_winbacks.columns else 0
-            if is_assistant_mode:
-                st.metric("🎉 Σύνολο Επανατοποθετήσεων", f"{len(df_winbacks)}")
+            if df_winbacks.empty:
+                st.info("Δεν εντοπίστηκαν επανατοποθετήσεις σε αυτή την καμπάνια (ή δεν υπάρχουν αρκετές ιστορικές καμπάνιες για σύγκριση).")
             else:
-                wb_total_value = df_winbacks['Τρέχουσα Αξία'].sum()
-                wb1, wb2 = st.columns(2)
-                wb1.metric("🎉 Σύνολο Επανατοποθετήσεων", f"{len(df_winbacks)}")
-                wb2.metric("💰 Αξία που Ξανακερδήθηκε", f"{wb_total_value:,.0f}€")
-            if n_unknown_duration > 0:
-                st.caption(
-                    f"ℹ️ {n_unknown_duration} από αυτές έχουν διάστημα απουσίας **πέρα από το διαθέσιμο ιστορικό** "
-                    f"(δεν έχουμε δεδομένα πόσο ακριβώς πριν παράγγειλαν τελευταία φορά — εμφανίζονται με 🕳️ badge)."
-                )
-
-            wb_search = st.text_input("🔍 Αναζήτηση", key="search_wb", placeholder="Πληκτρολόγησε όνομα...")
-            df_wb_disp = df_winbacks
-            if wb_search:
-                df_wb_disp = df_wb_disp[df_wb_disp['Ονοματεπώνυμο'].astype(str).str.contains(wb_search, case=False, na=False)]
-
-            for _, row in df_wb_disp.iterrows():
-                n = row['NameClean']
-                note_text = member_notes.get(n, "")
-                is_exact = row.get('Ακριβές Διάστημα', True)
-                absence_str = f"{int(row['Καμπάνιες Απουσίας'])}+ (🕳️ πέρα από ιστορικό)" if not is_exact else f"{int(row['Καμπάνιες Απουσίας'])}"
-                phone_raw = row.get('Τηλέφωνο')
-                phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
-                phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
+                n_unknown_duration = int((~df_winbacks['Ακριβές Διάστημα']).sum()) if 'Ακριβές Διάστημα' in df_winbacks.columns else 0
                 if is_assistant_mode:
-                    label = f"🎉 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — απουσίαζε {absence_str} καμπάνιες{' 📝' if note_text else ''}"
+                    st.metric("🎉 Σύνολο Επανατοποθετήσεων", f"{len(df_winbacks)}")
                 else:
-                    label = (
-                        f"🎉 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — απουσίαζε {absence_str} καμπάνιες, "
-                        f"τώρα: {row['Τρέχουσα Αξία']:,.0f}€{' 📝' if note_text else ''}"
+                    wb_total_value = df_winbacks['Τρέχουσα Αξία'].sum()
+                    wb1, wb2 = st.columns(2)
+                    wb1.metric("🎉 Σύνολο Επανατοποθετήσεων", f"{len(df_winbacks)}")
+                    wb2.metric("💰 Αξία που Ξανακερδήθηκε", f"{wb_total_value:,.0f}€")
+                if n_unknown_duration > 0:
+                    st.caption(
+                        f"ℹ️ {n_unknown_duration} από αυτές έχουν διάστημα απουσίας **πέρα από το διαθέσιμο ιστορικό** "
+                        f"(δεν έχουμε δεδομένα πόσο ακριβώς πριν παράγγειλαν τελευταία φορά — εμφανίζονται με 🕳️ badge)."
                     )
-                with st.expander(label, expanded=False):
-                    if phone_digits:
-                        st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
-                    if is_assistant_mode:
-                        st.caption(f"Καμπάνιες απουσίας: {absence_str}")
-                    else:
-                        basket_str = f"{row['Παλιό Μ.Ο. Καλάθι']:,.0f}€" if pd.notna(row['Παλιό Μ.Ο. Καλάθι']) else "Άγνωστο (πριν το διαθέσιμο ιστορικό)"
-                        st.caption(
-                            f"Τρέχουσα παραγγελία: {row['Τρέχουσα Αξία']:,.0f}€ | "
-                            f"Παλιό μέσο καλάθι: {basket_str} | "
-                            f"Καμπάνιες απουσίας: {absence_str}"
-                        )
-                    if not is_exact:
-                        st.info("Το ιστορικό σου ξεκινάει αργότερα από την τελευταία γνωστή παραγγελία αυτού του μέλους — πιθανότατα απουσίαζε για ακόμα περισσότερο καιρό από ό,τι δείχνει ο αριθμός.")
-                    if note_text:
-                        st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
-                    new_note = st.text_input("Σημείωση:", value=note_text,
-                                              key=f"note_wb_{n}", placeholder="π.χ. τι την έκανε να επιστρέψει...")
-                    if new_note != note_text:
-                        save_note(n, new_note)
-                        member_notes[n] = new_note
-                        st.rerun()
 
-    with tabs[8]:
+                wb_search = st.text_input("🔍 Αναζήτηση", key="search_wb", placeholder="Πληκτρολόγησε όνομα...")
+                df_wb_disp = df_winbacks
+                if wb_search:
+                    df_wb_disp = df_wb_disp[df_wb_disp['Ονοματεπώνυμο'].astype(str).str.contains(wb_search, case=False, na=False)]
+
+                for _, row in df_wb_disp.iterrows():
+                    n = row['NameClean']
+                    note_text = member_notes.get(n, "")
+                    is_exact = row.get('Ακριβές Διάστημα', True)
+                    absence_str = f"{int(row['Καμπάνιες Απουσίας'])}+ (🕳️ πέρα από ιστορικό)" if not is_exact else f"{int(row['Καμπάνιες Απουσίας'])}"
+                    phone_raw = row.get('Τηλέφωνο')
+                    phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                    phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
+                    if is_assistant_mode:
+                        label = f"🎉 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — απουσίαζε {absence_str} καμπάνιες{' 📝' if note_text else ''}"
+                    else:
+                        label = (
+                            f"🎉 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — απουσίαζε {absence_str} καμπάνιες, "
+                            f"τώρα: {row['Τρέχουσα Αξία']:,.0f}€{' 📝' if note_text else ''}"
+                        )
+                    with st.expander(label, expanded=False):
+                        if phone_digits:
+                            st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
+                        if is_assistant_mode:
+                            st.caption(f"Καμπάνιες απουσίας: {absence_str}")
+                        else:
+                            basket_str = f"{row['Παλιό Μ.Ο. Καλάθι']:,.0f}€" if pd.notna(row['Παλιό Μ.Ο. Καλάθι']) else "Άγνωστο (πριν το διαθέσιμο ιστορικό)"
+                            st.caption(
+                                f"Τρέχουσα παραγγελία: {row['Τρέχουσα Αξία']:,.0f}€ | "
+                                f"Παλιό μέσο καλάθι: {basket_str} | "
+                                f"Καμπάνιες απουσίας: {absence_str}"
+                            )
+                        if not is_exact:
+                            st.info("Το ιστορικό σου ξεκινάει αργότερα από την τελευταία γνωστή παραγγελία αυτού του μέλους — πιθανότατα απουσίαζε για ακόμα περισσότερο καιρό από ό,τι δείχνει ο αριθμός.")
+                        if note_text:
+                            st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
+                        new_note = st.text_input("Σημείωση:", value=note_text,
+                                                  key=f"note_wb_{n}", placeholder="π.χ. τι την έκανε να επιστρέψει...")
+                        if new_note != note_text:
+                            save_note(n, new_note)
+                            member_notes[n] = new_note
+                            st.rerun()
+
+    with tabs[tab_idx['today']]:
         st.caption(
             "⭐ Ένα ενιαίο check-list: οι πιο σημαντικές επαφές σήμερα, συνδυάζοντας Smart Rank, "
             "Διαγραφές υψηλής πιθανότητας, και σιωπηλά VIP — ταξινομημένα με ένα κοινό score."
@@ -3195,7 +3212,7 @@ try:
 
         action_rows = []
         # Πηγή 1: Smart Rank top δυναμικά μέλη (όσα δεν έχουν παραγγείλει ακόμα)
-        for _, r in df_potentials.head(60).iterrows():
+        for _, r in df_potentials.head(120).iterrows():
             n = r['NameClean']
             pred = member_predictions.get(n, {})
             score = pred.get('ml_prob', 0) * pred.get('predicted', 0)
@@ -3227,7 +3244,7 @@ try:
             st.info("Δεν εντοπίστηκαν προτεραιότητες για σήμερα — είτε όλα τα μέλη έχουν ήδη παραγγείλει, είτε δεν υπάρχουν αρκετά δεδομένα.")
         else:
             df_action = pd.DataFrame(action_rows).sort_values('Score', ascending=False)
-            df_action = df_action.drop_duplicates(subset='NameClean', keep='first').head(15).reset_index(drop=True)
+            df_action = df_action.drop_duplicates(subset='NameClean', keep='first').head(40).reset_index(drop=True)
 
             st.metric("📋 Προτεινόμενες επαφές σήμερα", f"{len(df_action)}")
 
@@ -3252,47 +3269,48 @@ try:
                     st.rerun()
                 st.divider()
 
-    with tabs[9]:
-        if is_assistant_mode:
-            st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (οικονομικά στοιχεία).")
-        else:
-            st.caption(
-                "⚙️ Γραμμές με **αρνητικό ποσό** στην τρέχουσα καμπάνια — διορθώσεις, επιστροφές, "
-                "ή ακυρώσεις μετά από τιμολόγηση. Αυτές δεν προσμετρώνται πουθενά αλλού στην εφαρμογή, "
-                "αλλά επηρεάζουν το πραγματικό καθαρό αποτέλεσμα."
-            )
-            if df_adjustments.empty:
-                st.success("✅ Δεν υπάρχουν adjustments (αρνητικά ποσά) σε αυτή την καμπάνια.")
+    if 'adjustments' in tab_idx:
+        with tabs[tab_idx['adjustments']]:
+            if is_assistant_mode:
+                st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (οικονομικά στοιχεία).")
             else:
-                total_adj = df_adjustments['Ποσό_Net'].sum()
-                adj1, adj2 = st.columns(2)
-                adj1.metric("⚙️ Σύνολο Adjustments", f"{len(df_adjustments)}")
-                adj2.metric("💸 Συνολικό Ποσό", f"{total_adj:,.2f} €", delta_color="inverse")
-
-                adj_search = st.text_input("🔍 Αναζήτηση", key="search_adj", placeholder="Πληκτρολόγησε όνομα...")
-                df_adj_disp = df_adjustments
-                if adj_search:
-                    df_adj_disp = df_adj_disp[df_adj_disp['Ονοματεπώνυμο'].astype(str).str.contains(adj_search, case=False, na=False)]
-
-                st.dataframe(
-                    df_adj_disp[['Ονοματεπώνυμο', 'Ποσό_Net', 'Κατάσταση']].rename(
-                        columns={'Ποσό_Net': 'Ποσό (€)'}
-                    ),
-                    use_container_width=True, hide_index=True,
-                    column_config={
-                        "Ποσό (€)": st.column_config.NumberColumn(format="%.2f €")
-                    }
+                st.caption(
+                    "⚙️ Γραμμές με **αρνητικό ποσό** στην τρέχουσα καμπάνια — διορθώσεις, επιστροφές, "
+                    "ή ακυρώσεις μετά από τιμολόγηση. Αυτές δεν προσμετρώνται πουθενά αλλού στην εφαρμογή, "
+                    "αλλά επηρεάζουν το πραγματικό καθαρό αποτέλεσμα."
                 )
+                if df_adjustments.empty:
+                    st.success("✅ Δεν υπάρχουν adjustments (αρνητικά ποσά) σε αυτή την καμπάνια.")
+                else:
+                    total_adj = df_adjustments['Ποσό_Net'].sum()
+                    adj1, adj2 = st.columns(2)
+                    adj1.metric("⚙️ Σύνολο Adjustments", f"{len(df_adjustments)}")
+                    adj2.metric("💸 Συνολικό Ποσό", f"{total_adj:,.2f} €", delta_color="inverse")
 
-                # Ομαδοποίηση ανά μέλος αν κάποιο έχει πάνω από 1 adjustment
-                member_adj_counts = df_adjustments.groupby('Ονοματεπώνυμο')['Ποσό_Net'].agg(['count', 'sum'])
-                multi_adj = member_adj_counts[member_adj_counts['count'] > 1]
-                if not multi_adj.empty:
-                    st.markdown("**⚠️ Μέλη με περισσότερα από 1 adjustment:**")
-                    for name, row in multi_adj.iterrows():
-                        st.caption(f"• {name}: {int(row['count'])} adjustments, σύνολο {row['sum']:,.2f}€")
+                    adj_search = st.text_input("🔍 Αναζήτηση", key="search_adj", placeholder="Πληκτρολόγησε όνομα...")
+                    df_adj_disp = df_adjustments
+                    if adj_search:
+                        df_adj_disp = df_adj_disp[df_adj_disp['Ονοματεπώνυμο'].astype(str).str.contains(adj_search, case=False, na=False)]
 
-    with tabs[10]:
+                    st.dataframe(
+                        df_adj_disp[['Ονοματεπώνυμο', 'Ποσό_Net', 'Κατάσταση']].rename(
+                            columns={'Ποσό_Net': 'Ποσό (€)'}
+                        ),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            "Ποσό (€)": st.column_config.NumberColumn(format="%.2f €")
+                        }
+                    )
+
+                    # Ομαδοποίηση ανά μέλος αν κάποιο έχει πάνω από 1 adjustment
+                    member_adj_counts = df_adjustments.groupby('Ονοματεπώνυμο')['Ποσό_Net'].agg(['count', 'sum'])
+                    multi_adj = member_adj_counts[member_adj_counts['count'] > 1]
+                    if not multi_adj.empty:
+                        st.markdown("**⚠️ Μέλη με περισσότερα από 1 adjustment:**")
+                        for name, row in multi_adj.iterrows():
+                            st.caption(f"• {name}: {int(row['count'])} adjustments, σύνολο {row['sum']:,.2f}€")
+
+    with tabs[tab_idx['credit_check']]:
         st.caption(
             "🏦 Παραγγελίες της τρέχουσας καμπάνιας **χωρίς καμία τιμή** στη στήλη Κατάσταση. "
             "Κατά πάσα πιθανότητα έχουν «κολλήσει» σε **πιστωτικό έλεγχο** και δεν έχουν προχωρήσει "
