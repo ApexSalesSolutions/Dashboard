@@ -1413,9 +1413,16 @@ try:
     # Auto-refresh toggle (Feature 7)
     st.sidebar.markdown("---")
     if HAS_AUTOREFRESH:
-        auto_refresh = st.sidebar.toggle("🔄 Auto Refresh (15')", value=False)
-        if auto_refresh:
-            st_autorefresh(interval=15 * 60 * 1000, key="autorefresh")
+        if is_assistant_mode:
+            # Λειτουργία Βοηθού: auto-refresh ΠΑΝΤΑ ενεργό, αυτόματα — έτσι η
+            # λίστα ενημερώνεται μόνη της όσο δουλεύει, χωρίς να χρειάζεται να
+            # θυμάται να κάνει refresh χειροκίνητα (και χωρίς επιλογή να το κλείσει).
+            st.sidebar.caption("🔄 Auto Refresh: ενεργό (κάθε 5 λεπτά)")
+            st_autorefresh(interval=5 * 60 * 1000, key="autorefresh")
+        else:
+            auto_refresh = st.sidebar.toggle("🔄 Auto Refresh (15')", value=False)
+            if auto_refresh:
+                st_autorefresh(interval=15 * 60 * 1000, key="autorefresh")
     else:
         st.sidebar.caption("💡 `pip install streamlit-autorefresh` για auto-refresh")
 
@@ -3214,6 +3221,11 @@ try:
         # Πηγή 1: Smart Rank top δυναμικά μέλη (όσα δεν έχουν παραγγείλει ακόμα)
         for _, r in df_potentials.head(120).iterrows():
             n = r['NameClean']
+            # ΡΗΤΟΣ έλεγχος ασφαλείας: αν έχει ήδη παραγγελία (τιμολογημένη ή σε
+            # αναμονή) στην τρέχουσα καμπάνια, ΔΕΝ μπαίνει στη λίστα κλήσεων —
+            # ανεξάρτητα από το αν το df_potentials το είχε ήδη φιλτράρει.
+            if n in names_with_any_order:
+                continue
             pred = member_predictions.get(n, {})
             score = pred.get('ml_prob', 0) * pred.get('predicted', 0)
             if score > 5:
@@ -3226,6 +3238,8 @@ try:
         # Πηγή 2: Διαγραφές με υψηλή πιθανότητα επιστροφής
         for _, r in df_rem_clean.iterrows():
             n = r['NameClean']
+            if n in names_with_any_order:
+                continue
             if r.get('ReturnProb', 0) >= 0.35:
                 action_rows.append({
                     'NameClean': n, 'Ονοματεπώνυμο': r['Ονοματεπώνυμο'], 'Τηλέφωνο': r.get('Τηλέφωνο'),
