@@ -48,6 +48,11 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { color: #ffffff !important; font-weight: 600 !important; }
     .stTabs [aria-selected="true"] p { color: #ff69b4 !important; }
 
+    /* === Λευκά τηλέφωνα — τα κλικαρίσιμα tel: links εμφανίζονταν με το
+       προεπιλεγμένο μπλε χρώμα link, δύσκολα ορατό στο σκούρο φόντο === */
+    a[href^="tel:"] { color: #ffffff !important; text-decoration: none !important; }
+    a[href^="tel:"]:hover { color: #ff69b4 !important; text-decoration: underline !important; }
+
     [data-testid="stMetric"] {
         background: rgba(28, 31, 38, 0.7) !important;
         backdrop-filter: blur(10px);
