@@ -833,7 +833,7 @@ try:
 
     st.sidebar.markdown("---")
 
-    # Έξυπνη εύρεση στήλης Ονόματος
+    # Έξυπνη εύρεση στήλης Ονόματος (ΚΑΙ τηλεφώνου — χρειάζεται παντού για κλήσεις)
     for df in [df_sales_all, df_todo_raw, df_removals_raw, df_members_raw]:
         df.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df.columns]
         
@@ -845,6 +845,13 @@ try:
         else:
             df['NameClean'] = "ΑΓΝΩΣΤΟ"
             df['Ονοματεπώνυμο'] = "ΑΓΝΩΣΤΟ"
+
+        # ΚΡΙΣΙΜΟ: κοινή στήλη τηλεφώνου σε ΟΛΑ τα sheets, ανεξάρτητα από το πώς
+        # λέγεται στο καθένα (π.χ. 'Τηλέφωνο', 'Κινητό Τηλέφωνο') — χωρίς αυτό,
+        # το render_list() (Smart Rank/Εκκρεμείς/Διαγραφές) δεν είχε αξιόπιστο
+        # τρόπο να βρει τηλέφωνο σε λίστες που προέρχονται από διαφορετικά φύλλα.
+        phone_col_here = next((c for c in df.columns if 'ΤΗΛ' in remove_accents(str(c)).upper() or 'PHONE' in remove_accents(str(c)).upper()), None)
+        df['TelClean'] = df[phone_col_here] if phone_col_here else None
 
     # ΑΣΦΑΛΗΣ ΥΠΟΛΟΓΙΣΜΟΣ ΠΟΣΟΥ
     amount_col = next((c for c in df_sales_all.columns if 'ΠΟΣΟ' in remove_accents(str(c)).upper() or 'AMOUNT' in remove_accents(str(c)).upper()), 'Ποσό')
@@ -910,6 +917,37 @@ try:
     all_goals = load_goals()
     camp_key_str = str(selected_camp)
     saved = all_goals.get(camp_key_str, {})
+
+    # === ΜΟΝΙΜΗ ΑΠΟΘΗΚΕΥΣΗ "✓ Ok" ===
+    # Πριν, το st.session_state.sent_ids ζούσε ΜΟΝΟ στη μνήμη της συνεδρίας —
+    # έσβηνε αν κλείσει το tab, ξαναφορτωθεί η σελίδα, ή "κοιμηθεί" το app (κοινό
+    # στο δωρεάν Streamlit Cloud μετά από αδράνεια). Αν η βοηθός καλούσε 10 άτομα
+    # και μετά ξανάνοιγε το link, τα έβλεπε όλα σαν να μην τα είχε καλέσει ποτέ.
+    # Τώρα αποθηκεύεται στο ίδιο JSON, ανά ΗΜΕΡΑ + καμπάνια — έτσι "σήμερα
+    # τσεκαρισμένο" παραμένει τσεκαρισμένο όλη μέρα, αλλά αύριο η λίστα
+    # ξεκινάει καθαρή (λογικό, αφού μπορεί να τους ξανακαλέσει σε νέα καμπάνια).
+    _contacted_key = f"_contacted_{camp_key_str}_{date.today().isoformat()}"
+
+    def load_contacted_today():
+        goals = load_goals()
+        return set(goals.get(_contacted_key, []))
+
+    def save_contacted_today(ids_set):
+        goals = load_goals()
+        goals[_contacted_key] = list(ids_set)
+        save_goals(goals)
+
+    def mark_contacted(row_key):
+        """Τσεκάρει ΚΑΙ αποθηκεύει μόνιμα — χρησιμοποιείται παντού αντί για
+        απευθείας st.session_state.sent_ids.add(), ώστε να μην ξεχνιέται ποτέ
+        ξανά κάποιο σημείο αποθήκευσης."""
+        st.session_state.sent_ids.add(row_key)
+        save_contacted_today(st.session_state.sent_ids)
+
+    # Φόρτωση μία φορά ανά session (merge με ό,τι ήδη τσεκαρίστηκε σήμερα)
+    if '_contacted_loaded_for' not in st.session_state or st.session_state._contacted_loaded_for != _contacted_key:
+        st.session_state.sent_ids = st.session_state.sent_ids | load_contacted_today()
+        st.session_state._contacted_loaded_for = _contacted_key
 
     if is_assistant_mode:
         # Λειτουργία Βοηθού: μη εμφάνιση στόχων — χρήση αποθηκευμένων τιμών σιωπηλά
@@ -1295,6 +1333,7 @@ try:
 
     if st.sidebar.button("🔄 Reset Tik (Ok)"):
         st.session_state.sent_ids = set()
+        save_contacted_today(set())  # καθαρισμός ΚΑΙ της μόνιμης αποθήκευσης
         st.rerun()
 
     # ==========================================
@@ -2061,10 +2100,10 @@ try:
         absent_count = sum(1 for ck in hist_camp_sorted
                            if n not in set(df_sales_all[df_sales_all[camp_col]==ck]['NameClean']))
         if absent_count >= 2:
-            silent_vips.append((row['Ονοματεπώνυμο'], absent_count))
+            silent_vips.append((row['Ονοματεπώνυμο'], absent_count, row.get('TelClean')))
     if silent_vips:
         silent_vips.sort(key=lambda x: -x[1])
-        names_str = ", ".join(f"{n} ({c} καμπ.)" for n,c in silent_vips[:3])
+        names_str = ", ".join(f"{n} ({c} καμπ.)" for n,c,_ in silent_vips[:3])
         alerts.append(("🔇", f"**Σιωπηλά VIP:** {names_str} — πιθανή οριστική απώλεια", "error"))
     
     # Alert 5: High value churners — δεν αναφέρει ποσά ρητά, ασφαλές
@@ -2758,16 +2797,22 @@ try:
                     return_badge = f" 🟡 {rp:.0%} πιθανότητα"
                 else:
                     return_badge = f" 🔴 {rp:.0%} πιθανότητα"
+            # Τηλέφωνο — απαραίτητο για επικοινωνία, εμφανίζεται ΠΑΝΤΑ (και στις δύο λειτουργίες)
+            phone_raw = r.get('TelClean')
+            phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+            phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
             # Λειτουργία Βοηθού: καμία μνεία ποσού/€ πουθενά — μόνο τάση/πιθανότητα/σημείωση
             if is_assistant_mode:
-                label = f"**{r['Ονοματεπώνυμο']}**{trend_str}{return_badge}{' 📝' if note_text else ''}"
+                label = f"**{r['Ονοματεπώνυμο']}** — 📞 {phone_display}{trend_str}{return_badge}{' 📝' if note_text else ''}"
                 caption_text = f"{rel_str.lstrip(' |')}{tier_note}".strip(" |")
             else:
-                label = f"**{r['Ονοματεπώνυμο']}** — ~{h_val:.0f}€{trend_str}{return_badge}{' 📝' if note_text else ''}"
+                label = f"**{r['Ονοματεπώνυμο']}** — 📞 {phone_display} — ~{h_val:.0f}€{trend_str}{return_badge}{' 📝' if note_text else ''}"
                 caption_text = f"Εκτίμηση: ~{h_val:.0f}€{trend_str}{rel_str}{ci_str}{tier_note}"
             with st.expander(label, expanded=False):
                 mc1, mc2 = st.columns([4, 1])
                 with mc1:
+                    if phone_digits:
+                        st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
                     if caption_text:
                         st.caption(caption_text)
                     if note_text:
@@ -2781,7 +2826,7 @@ try:
                             st.rerun()
                 with mc2:
                     if st.button("✓ Ok", key=f"btn_{row_key}"):
-                        st.session_state.sent_ids.add(row_key)
+                        mark_contacted(row_key)
                         st.rerun()
 
     with tabs[0]:
@@ -2944,13 +2989,18 @@ try:
             for _, row in df_gpr_disp.iterrows():
                 n = row['NameClean']
                 note_text = member_notes.get(n, "")
+                phone_raw = row.get('Τηλέφωνο')
+                phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
                 if is_assistant_mode:
-                    label = f"**{row['Ονοματεπώνυμο']}** — {int(row['Παραγγελίες'])} παραγγελίες, {int(row.get('Καμπάνιες Απουσίας', 0))} καμπ. απουσίας{' 📝' if note_text else ''}"
+                    label = f"**{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — {int(row['Παραγγελίες'])} παραγγελίες, {int(row.get('Καμπάνιες Απουσίας', 0))} καμπ. απουσίας{' 📝' if note_text else ''}"
                 else:
-                    label = f"**{row['Ονοματεπώνυμο']}** — Μ.Ο. {row['Μ.Ο. Καλάθι']:,.0f}€ ({int(row['Παραγγελίες'])} παραγγελίες, {int(row.get('Καμπάνιες Απουσίας', 0))} καμπ. απουσίας){' 📝' if note_text else ''}"
+                    label = f"**{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — Μ.Ο. {row['Μ.Ο. Καλάθι']:,.0f}€ ({int(row['Παραγγελίες'])} παραγγελίες, {int(row.get('Καμπάνιες Απουσίας', 0))} καμπ. απουσίας){' 📝' if note_text else ''}"
                 with st.expander(label, expanded=False):
                     gc1, gc2 = st.columns([4, 1])
                     with gc1:
+                        if phone_digits:
+                            st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
                         if is_assistant_mode:
                             st.caption(
                                 f"Παραγγελίες ιστορικά: {int(row['Παραγγελίες'])} | "
@@ -2975,7 +3025,7 @@ try:
                     with gc2:
                         row_key = f"gpr_{n}"
                         if st.button("✓ Ok", key=f"btn_{row_key}"):
-                            st.session_state.sent_ids.add(row_key)
+                            mark_contacted(row_key)
                             st.rerun()
 
     with tabs[7]:
@@ -3104,14 +3154,19 @@ try:
                 note_text = member_notes.get(n, "")
                 is_exact = row.get('Ακριβές Διάστημα', True)
                 absence_str = f"{int(row['Καμπάνιες Απουσίας'])}+ (🕳️ πέρα από ιστορικό)" if not is_exact else f"{int(row['Καμπάνιες Απουσίας'])}"
+                phone_raw = row.get('Τηλέφωνο')
+                phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
                 if is_assistant_mode:
-                    label = f"🎉 **{row['Ονοματεπώνυμο']}** — απουσίαζε {absence_str} καμπάνιες{' 📝' if note_text else ''}"
+                    label = f"🎉 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — απουσίαζε {absence_str} καμπάνιες{' 📝' if note_text else ''}"
                 else:
                     label = (
-                        f"🎉 **{row['Ονοματεπώνυμο']}** — απουσίαζε {absence_str} καμπάνιες, "
+                        f"🎉 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — απουσίαζε {absence_str} καμπάνιες, "
                         f"τώρα: {row['Τρέχουσα Αξία']:,.0f}€{' 📝' if note_text else ''}"
                     )
                 with st.expander(label, expanded=False):
+                    if phone_digits:
+                        st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
                     if is_assistant_mode:
                         st.caption(f"Καμπάνιες απουσίας: {absence_str}")
                     else:
@@ -3147,7 +3202,7 @@ try:
             if score > 5:
                 detail = f"{pred.get('ml_prob',0):.0%} πιθανότητα" if is_assistant_mode else f"~{pred.get('predicted',0):.0f}€ | {pred.get('ml_prob',0):.0%} πιθανότητα"
                 action_rows.append({
-                    'NameClean': n, 'Ονοματεπώνυμο': r['Ονοματεπώνυμο'],
+                    'NameClean': n, 'Ονοματεπώνυμο': r['Ονοματεπώνυμο'], 'Τηλέφωνο': r.get('TelClean'),
                     'Κατηγορία': '🔥 Smart Rank', 'Score': score,
                     'Λεπτομέρεια': detail
                 })
@@ -3156,14 +3211,14 @@ try:
             n = r['NameClean']
             if r.get('ReturnProb', 0) >= 0.35:
                 action_rows.append({
-                    'NameClean': n, 'Ονοματεπώνυμο': r['Ονοματεπώνυμο'],
+                    'NameClean': n, 'Ονοματεπώνυμο': r['Ονοματεπώνυμο'], 'Τηλέφωνο': r.get('Τηλέφωνο'),
                     'Κατηγορία': '⚠️ Διαγραφή', 'Score': r.get('ReturnScore', 0),
                     'Λεπτομέρεια': f"{r.get('ReturnProb',0):.0%} πιθανότητα επιστροφής"
                 })
         # Πηγή 3: Σιωπηλά VIP (ήδη υπολογισμένα στο alerts block ως silent_vips)
-        for name_orig, absent_count in (silent_vips if 'silent_vips' in dir() else []):
+        for name_orig, absent_count, vip_phone in (silent_vips if 'silent_vips' in dir() else []):
             action_rows.append({
-                'NameClean': name_orig, 'Ονοματεπώνυμο': name_orig,
+                'NameClean': name_orig, 'Ονοματεπώνυμο': name_orig, 'Τηλέφωνο': vip_phone,
                 'Κατηγορία': '🔇 Σιωπηλό VIP', 'Score': absent_count * 50,
                 'Λεπτομέρεια': f"Απουσιάζει {absent_count} καμπάνιες"
             })
@@ -3182,11 +3237,18 @@ try:
                 if row_key in st.session_state.sent_ids:
                     continue
                 note_text = member_notes.get(n, "")
+                phone_raw = row.get('Τηλέφωνο')
+                phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
                 c1, c2 = st.columns([5, 1])
                 c1.write(f"**{i+1}. {row['Ονοματεπώνυμο']}** — {row['Κατηγορία']}")
+                if phone_digits:
+                    c1.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
+                else:
+                    c1.caption(f"📞 {phone_display}")
                 c1.caption(f"{row['Λεπτομέρεια']}{' | 📝 ' + note_text if note_text else ''}")
                 if c2.button("✓ Ok", key=f"btn_{row_key}"):
-                    st.session_state.sent_ids.add(row_key)
+                    mark_contacted(row_key)
                     st.rerun()
                 st.divider()
 
