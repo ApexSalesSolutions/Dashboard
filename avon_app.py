@@ -33,6 +33,21 @@ st.set_page_config(page_title="Avon Strategic AI v800 (Machine Learning Edition)
 st.markdown("""
     <style>
     .stApp { background-color: #0b0f19; color: #e2e8f0; }
+
+    /* === Ορατή γραμμή κύλισης (scrollbar) — χρήσιμο ειδικά σε κινητό/λειτουργία
+       βοηθού, όπου η προεπιλεγμένη γραμμή του browser είναι πολύ λεπτή/αόρατη === */
+    ::-webkit-scrollbar { width: 12px; height: 12px; }
+    ::-webkit-scrollbar-track { background: #14141f; }
+    ::-webkit-scrollbar-thumb { background: #7360f2; border-radius: 10px; border: 2px solid #14141f; }
+    ::-webkit-scrollbar-thumb:hover { background: #9280ff; }
+    * { scrollbar-width: thin; scrollbar-color: #7360f2 #14141f; }
+
+    /* === Λευκά γράμματα στα tabs — ξεχωρίζουν καθαρά στο σκούρο φόντο === */
+    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p,
+    .stTabs [data-baseweb="tab-list"] button p,
+    .stTabs [data-baseweb="tab"] { color: #ffffff !important; font-weight: 600 !important; }
+    .stTabs [aria-selected="true"] p { color: #ff69b4 !important; }
+
     [data-testid="stMetric"] {
         background: rgba(28, 31, 38, 0.7) !important;
         backdrop-filter: blur(10px);
