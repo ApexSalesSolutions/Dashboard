@@ -402,21 +402,23 @@ def create_pdf_bytes(df_export, phone_column):
     font_loaded, font_family, _ = setup_greek_font(pdf)
     if not font_loaded:
         pdf.set_font('helvetica', '', 11)
-        
+
+    def safe_txt(s):
+        """Αποφυγή crash όταν δεν βρέθηκε Unicode font — μετατρέπει ελληνικά σε
+        λατινικούς χαρακτήρες αντί να αφήνει το FPDF να σκάσει σε core font."""
+        if font_loaded:
+            return s
+        return s.encode('latin-1', 'replace').decode('latin-1')
+
     pdf.set_font_size(16)
-    pdf.cell(0, 10, txt="ΑΤΟΜΑ ΧΩΡΙΣ ΠΑΡΑΓΓΕΛΙΑ", ln=True, align='C')
+    pdf.cell(0, 10, txt=safe_txt("ΑΤΟΜΑ ΧΩΡΙΣ ΠΑΡΑΓΓΕΛΙΑ"), ln=True, align='C')
     pdf.set_font_size(11)
     pdf.ln(8)
     
     for _, row in df_export.iterrows():
         name = str(row['Ονοματεπώνυμο'])
         phone = str(row[phone_column]) if phone_column in row and pd.notna(row[phone_column]) else "-"
-        text = f"{name} | Τηλ: {phone}"
-        
-        if not font_loaded:
-            # Αποφυγή error λόγω Ελληνικών στην Helvetica
-            text = text.encode('latin-1', 'replace').decode('latin-1')
-            
+        text = safe_txt(f"{name} | Τηλ: {phone}")
         pdf.cell(0, 7, txt=text, ln=True)
         
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -447,11 +449,19 @@ def create_campaign_report_pdf(report_data):
         s = str(s)
         if not font_loaded:
             # Δεν βρέθηκε Unicode font — μεταγραφή σε λατινικούς χαρακτήρες
-            # αντί για άσχημα '?' (καλύτερη αναγνωσιμότητα ως έσχατη λύση)
-            greek_to_latin = str.maketrans(
-                'ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικλμνξοπρστυφχψω',
-                'ABGDEZHTHIKLMNXOPRSTYFXPSOabgdezhthiklmnxoprstyfxpso'
-            )
+            # αντί για άσχημα '?' (καλύτερη αναγνωσιμότητα ως έσχατη λύση).
+            # ΣΗΜΑΝΤΙΚΟ: η dict-μορφή του str.maketrans() χρειάζεται εδώ (όχι η
+            # μορφή με δύο strings), γιατί κάποια γράμματα χαρτογραφούνται σε
+            # ΠΟΛΛΑΠΛΟΥΣ χαρακτήρες (Θ→TH, Ψ→PS) — με δύο strings ίσου μήκους
+            # αυτό είναι αδύνατο και προκαλεί ValueError/λάθος αντιστοίχιση.
+            greek_to_latin = str.maketrans({
+                'Α':'A','Β':'B','Γ':'G','Δ':'D','Ε':'E','Ζ':'Z','Η':'H','Θ':'TH',
+                'Ι':'I','Κ':'K','Λ':'L','Μ':'M','Ν':'N','Ξ':'X','Ο':'O','Π':'P',
+                'Ρ':'R','Σ':'S','Τ':'T','Υ':'Y','Φ':'F','Χ':'X','Ψ':'PS','Ω':'O',
+                'α':'a','β':'b','γ':'g','δ':'d','ε':'e','ζ':'z','η':'h','θ':'th',
+                'ι':'i','κ':'k','λ':'l','μ':'m','ν':'n','ξ':'x','ο':'o','π':'p',
+                'ρ':'r','σ':'s','ς':'s','τ':'t','υ':'y','φ':'f','χ':'x','ψ':'ps','ω':'o',
+            })
             s = s.translate(greek_to_latin)
             s = s.encode('latin-1', 'replace').decode('latin-1')
         return s
@@ -862,12 +872,21 @@ try:
 
     # === ΛΕΙΤΟΥΡΓΙΑ ΒΟΗΘΟΥ (ορίζεται νωρίς ώστε να κρύβει ΚΑΙ τα στοιχεία του
     # sidebar — στόχους, ποσά, calibration — όχι μόνο το κυρίως περιεχόμενο) ===
+    # ΚΡΙΣΙΜΟ: αν το link ήρθε με ?view=assistant, η λειτουργία ΚΛΕΙΔΩΝΕΙ — δεν
+    # εμφανίζεται καθόλου διαδραστικό toggle, ώστε η βοηθός να ΜΗΝ μπορεί να το
+    # απενεργοποιήσει η ίδια και να δει στόχους/ποσά. Το toggle (για να το αλλάζεις
+    # ΕΣΥ χειροκίνητα, π.χ. για δοκιμή) εμφανίζεται ΜΟΝΟ όταν ανοίγεις το app
+    # χωρίς αυτή την παράμετρο στο URL.
     _qp_view = st.query_params.get("view", "")
-    is_assistant_mode = st.sidebar.toggle(
-        "🙋 Λειτουργία Βοηθού (χωρίς ποσά/στόχους)",
-        value=(_qp_view == "assistant"),
-        help="Κρύβει στόχους, ποσά, calibration και analytics — μόνο ονόματα/τηλέφωνα/λίστες κλήσεων. Πρόσθεσε '?view=assistant' στο τέλος του link για αυτόματη ενεργοποίηση."
-    )
+    if _qp_view == "assistant":
+        is_assistant_mode = True
+        st.sidebar.info("🙋 Λειτουργία Βοηθού")
+    else:
+        is_assistant_mode = st.sidebar.toggle(
+            "🙋 Λειτουργία Βοηθού (χωρίς ποσά/στόχους)",
+            value=False,
+            help="Κρύβει στόχους, ποσά, calibration και analytics — μόνο ονόματα/τηλέφωνα/λίστες κλήσεων. Πρόσθεσε '?view=assistant' στο τέλος του link για μόνιμη, κλειδωμένη ενεργοποίηση σε όποιον ανοίξει αυτό το link."
+        )
 
     # =========================================================
     # PERSISTENT CAMPAIGN GOALS (αποθηκεύονται σε JSON)
