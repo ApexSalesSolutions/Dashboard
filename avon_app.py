@@ -3197,59 +3197,82 @@ try:
             unsafe_allow_html=True
         )
 
-        # === ΕΚΤΙΜΗΣΗ ΠΡΟΜΗΘΕΙΑΣ (μόνο για σένα) ===
-        # 1. Καθαρές πωλήσεις = τελικές πωλήσεις − χρέος καμπάνιας
-        # 2. % επίτευξης πλάνου πωλήσεων βάσει των ΚΑΘΑΡΩΝ πωλήσεων (μετά χρέους)
-        # 3. Ποιος πίνακας προμήθειας χρησιμοποιείται: Πίνακας 1 αν πιάστηκε ο
-        #    στόχος Stencil Growth, αλλιώς Πίνακας 2 (χαμηλότερα ποσοστά)
-        # 4. +300€ μπόνους αν πιάστηκε ο στόχος Ενεργών Μελών
-        # 5. +24% ΦΠΑ στο τελικό άθροισμα (προμήθεια + μπόνους)
-        def get_commission_pct(pct, stencil_ok):
-            if stencil_ok:  # Πίνακας 1
+        # === ΕΚΤΙΜΗΣΗ ΠΡΟΜΗΘΕΙΑΣ ΒΑΣΕΙ ΤΕΛΙΚΗΣ ΠΡΟΒΛΕΨΗΣ (μόνο για σένα) ===
+        # 1. Καθαρές πωλήσεις = ΤΕΛΙΚΗ ΠΡΟΒΛΕΨΗ (Ensemble AI Forecast) − χρέος καμπάνιας
+        #    — όχι οι τρέχουσες πωλήσεις, ώστε να βλέπεις από νωρίς πού πάει να
+        #    καταλήξει η προμήθειά σου, όχι μόνο τι έχεις μαζέψει μέχρι τώρα.
+        # 2. % επίτευξης πλάνου πωλήσεων βάσει των ΚΑΘΑΡΩΝ προβλεπόμενων πωλήσεων
+        # 3. Υπολογίζονται ΚΑΙ οι δύο πίνακες ταυτόχρονα (όχι μόνο ο "τρέχων"),
+        #    ώστε να βλέπεις ξεκάθαρα το «διακύβευμα» του στόχου Stencil Growth.
+        # 4. +300€ μπόνους αν η ΠΡΟΒΛΕΨΗ ενεργών μελών (active_p50) πιάνει τον στόχο
+        # 5. +24% ΦΠΑ στο τελικό άθροισμα (προμήθεια + μπόνους) — και στους δύο πίνακες
+        def get_commission_pct(pct, table_num):
+            if table_num == 1:
                 if pct >= 105: return 0.065
                 elif pct >= 100: return 0.055
                 elif pct >= 95: return 0.045
                 else: return 0.035
-            else:  # Πίνακας 2
+            else:
                 if pct >= 105: return 0.05
                 elif pct >= 100: return 0.045
                 elif pct >= 95: return 0.04
                 else: return 0.035
 
-        net_sales_after_debt = max(0.0, total_billed_net - campaign_debt)
-        achievement_pct_debt = (net_sales_after_debt / goal_sales * 100) if goal_sales > 0 else 0.0
-        stencil_achieved = stencil_growth_now >= goal_stencil_growth
-        commission_pct = get_commission_pct(achievement_pct_debt, stencil_achieved)
-        commission_base = net_sales_after_debt * commission_pct
-        actives_achieved = goal_actives > 0 and unique_orders_count >= goal_actives
-        actives_bonus = 300.0 if actives_achieved else 0.0
-        commission_pre_vat = commission_base + actives_bonus
-        commission_final = commission_pre_vat * 1.24
-        table_label = "Πίνακας 1 ✅ (πιάστηκε το Stencil Growth)" if stencil_achieved else "Πίνακας 2 (δεν πιάστηκε το Stencil Growth)"
+        net_sales_forecast_after_debt = max(0.0, final_forecast - campaign_debt)
+        achievement_pct_forecast = (net_sales_forecast_after_debt / goal_sales * 100) if goal_sales > 0 else 0.0
 
-        with st.expander("💼 Εκτίμηση Προμήθειας", expanded=False):
+        actives_achieved_forecast = goal_actives > 0 and active_p50 >= goal_actives
+        actives_bonus = 300.0 if actives_achieved_forecast else 0.0
+
+        commission_pct_t1 = get_commission_pct(achievement_pct_forecast, 1)
+        commission_pct_t2 = get_commission_pct(achievement_pct_forecast, 2)
+        commission_base_t1 = net_sales_forecast_after_debt * commission_pct_t1
+        commission_base_t2 = net_sales_forecast_after_debt * commission_pct_t2
+        commission_final_t1 = (commission_base_t1 + actives_bonus) * 1.24
+        commission_final_t2 = (commission_base_t2 + actives_bonus) * 1.24
+
+        stencil_achieved_forecast = stencil_growth_forecast >= goal_stencil_growth
+
+        with st.expander("💼 Εκτίμηση Προμήθειας (βάσει τελικής πρόβλεψης)", expanded=False):
             pc1, pc2 = st.columns(2)
-            pc1.metric("💰 Τελικές Πωλήσεις", f"{total_billed_net:,.0f} €")
+            pc1.metric("📊 Τελική Πρόβλεψη Πωλήσεων", f"{final_forecast:,.0f} €")
             pc2.metric("💳 Χρέος Καμπάνιας", f"-{campaign_debt:,.0f} €")
-            st.metric("🧮 Καθαρές Πωλήσεις (μετά χρέους)", f"{net_sales_after_debt:,.0f} €",
-                      delta=f"{achievement_pct_debt:.1f}% του πλάνου")
-            st.caption(f"📋 Χρησιμοποιείται ο **{table_label}**")
-            pc3, pc4 = st.columns(2)
-            pc3.metric("📊 Ποσοστό Προμήθειας", f"{commission_pct:.1%}")
-            pc4.metric("💵 Βασική Προμήθεια", f"{commission_base:,.0f} €")
-            if actives_achieved:
-                st.success(f"✅ Στόχος Ενεργών Μελών επιτεύχθηκε — μπόνους +300€")
-            st.markdown(
-                f"<div style='padding:12px 16px;border-radius:8px;background:rgba(40,167,69,0.12);"
-                f"border:1px solid rgba(40,167,69,0.4);margin-top:10px;'>"
-                f"<span style='font-size:13px;color:#888;'>ΤΕΛΙΚΗ ΠΡΟΜΗΘΕΙΑ (με ΦΠΑ 24%)</span><br>"
-                f"<span style='font-size:24px;font-weight:bold;color:#28a745;'>{commission_final:,.2f} €</span>"
-                f"<br><span style='font-size:11px;color:#888;'>({commission_base:,.0f}€ βασική + {actives_bonus:,.0f}€ μπόνους) × 1,24 ΦΠΑ</span>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
+            st.metric("🧮 Καθαρή Προβλεπόμενη Πωλήσεις (μετά χρέους)", f"{net_sales_forecast_after_debt:,.0f} €",
+                      delta=f"{achievement_pct_forecast:.1f}% του πλάνου")
+            if actives_achieved_forecast:
+                st.success(f"✅ Η πρόβλεψη ενεργών μελών ({active_p50}) πιάνει τον στόχο ({goal_actives}) — μπόνους +300€")
+            else:
+                st.caption(f"ℹ️ Πρόβλεψη ενεργών μελών: {active_p50} | Στόχος: {goal_actives} — χωρίς μπόνους ενεργών προς το παρόν")
+
+            st.markdown("---")
+            tb1, tb2 = st.columns(2)
+            with tb1:
+                t1_color = "#28a745" if stencil_achieved_forecast else "#666"
+                st.markdown(
+                    f"<div style='padding:12px 16px;border-radius:8px;background:rgba(40,167,69,0.10);"
+                    f"border:1px solid {t1_color};'>"
+                    f"<span style='font-size:12px;color:#888;'>ΠΙΝΑΚΑΣ 1 {'✅ (πιάνεις το Stencil Growth)' if stencil_achieved_forecast else '(αν πιάσεις το Stencil Growth)'}</span><br>"
+                    f"<span style='font-size:12px;color:#888;'>Ποσοστό: {commission_pct_t1:.1%} | Βασική: {commission_base_t1:,.0f}€</span><br>"
+                    f"<span style='font-size:22px;font-weight:bold;color:#28a745;'>{commission_final_t1:,.2f} €</span>"
+                    f"<br><span style='font-size:10px;color:#888;'>(βασική + μπόνους) × 1,24 ΦΠΑ</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            with tb2:
+                t2_color = "#dc3545" if not stencil_achieved_forecast else "#666"
+                st.markdown(
+                    f"<div style='padding:12px 16px;border-radius:8px;background:rgba(220,53,69,0.10);"
+                    f"border:1px solid {t2_color};'>"
+                    f"<span style='font-size:12px;color:#888;'>ΠΙΝΑΚΑΣ 2 {'⚠️ (αν ΔΕΝ πιάσεις το Stencil Growth)' if stencil_achieved_forecast else '❌ (δεν πιάνεις το Stencil Growth)'}</span><br>"
+                    f"<span style='font-size:12px;color:#888;'>Ποσοστό: {commission_pct_t2:.1%} | Βασική: {commission_base_t2:,.0f}€</span><br>"
+                    f"<span style='font-size:22px;font-weight:bold;color:#dc3545;'>{commission_final_t2:,.2f} €</span>"
+                    f"<br><span style='font-size:10px;color:#888;'>(βασική + μπόνους) × 1,24 ΦΠΑ</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            st.caption(f"💡 Διαφορά αν πιάσεις το Stencil Growth: **+{commission_final_t1 - commission_final_t2:,.2f}€**")
             if not is_closed:
-                st.caption("ℹ️ Υπολογισμένο με τις **τρέχουσες** πωλήσεις — θα οριστικοποιηθεί στο κλείσιμο της καμπάνιας.")
+                st.caption("ℹ️ Υπολογισμένο με βάση την τρέχουσα AI πρόβλεψη — θα αλλάζει καθώς εξελίσσεται η καμπάνια, και θα οριστικοποιηθεί στο κλείσιμο.")
 
     # === Δυναμική λίστα tabs — στη Λειτουργία Βοηθού, τα μη-διαθέσιμα tabs
     # (AI Advisor, Προς Τιμολόγηση, Τιμολογημένες, Additions, Adjustments) ΔΕΝ
