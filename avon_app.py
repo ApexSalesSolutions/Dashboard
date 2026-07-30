@@ -2045,6 +2045,34 @@ try:
         pending_factors = np.random.uniform(0.88, 0.98, n_sims)
         mc_results = total_billed_net + val_pros_timologisi * pending_factors + sim_remaining
 
+        # === ΠΡΟΒΛΕΨΗ ΕΝΕΡΓΩΝ ΜΕΛΩΝ (Actives) ===
+        # Χρησιμοποιεί ΤΙΣ ΙΔΙΕΣ προσομοιώσεις (order_decisions) που ήδη τρέχουν
+        # για τις πωλήσεις — καμία επιπλέον υπολογιστική επιβάρυνση, πλήρως
+        # συνεπές με το Ensemble Forecast (ίδιες τυχαίες αποφάσεις ανά μέλος).
+        active_count_sim = unique_orders_count + order_decisions.sum(axis=1)
+        active_p25 = int(np.percentile(active_count_sim, 25))
+        active_p50 = int(np.percentile(active_count_sim, 50))
+        active_p75 = int(np.percentile(active_count_sim, 75))
+
+        # === ΠΡΟΒΛΕΨΗ ΔΙΑΓΡΑΦΩΝ ===
+        # Υποψήφιοι διαγραφής = μέλη του Φύλλο3 (df_removals_raw) που ακόμα δεν
+        # έχουν παραγγείλει. Χρησιμοποιώντας το ΙΔΙΟ mask πάνω στο order_decisions,
+        # βλέπουμε πόσοι από αυτούς «επιστρέφουν» σε κάθε προσομοίωση — ό,τι
+        # απομένει είναι η τελική πρόβλεψη διαγραφών, με πλήρη συνέπεια με τις
+        # πιθανότητες επιστροφής (ml_prob) που ήδη υπολογίζονται ανά μέλος.
+        _removal_candidate_set = set(df_removals_raw['NameClean'].unique())
+        _removal_mask = np.array([n in _removal_candidate_set for n in names_not_ordered])
+        n_removal_candidates = int(_removal_mask.sum())
+        current_removal_count = n_removal_candidates
+        if n_removal_candidates > 0:
+            removal_returns_sim = order_decisions[:, _removal_mask].sum(axis=1)
+            removal_final_sim = n_removal_candidates - removal_returns_sim
+        else:
+            removal_final_sim = np.zeros(n_sims)
+        removal_p25 = int(np.percentile(removal_final_sim, 25))
+        removal_p50 = int(np.percentile(removal_final_sim, 50))
+        removal_p75 = int(np.percentile(removal_final_sim, 75))
+
         # === BAYESIAN 3-WAY BLEND ===
         data_trust = min(0.75, time_passed_ratio * 1.1)
         hist_trust = max(0.15, (1.0 - data_trust) * 0.6)
@@ -2155,6 +2183,11 @@ try:
         pacing_w = 0.0
         sales_time_pct = None
         pacing_reliable = False
+        # Actives: όλοι έχουν ήδη παραγγείλει, οπότε το σύνολο είναι σταθερό
+        active_p25 = active_p50 = active_p75 = unique_orders_count
+        # Διαγραφές: δεν απομένουν μη-παραγγείλαντα μέλη, άρα καμία υποψήφια διαγραφή
+        removal_p25 = removal_p50 = removal_p75 = 0
+        current_removal_count = 0
     else:
         # Η καμπάνια όντως έκλεισε (πέρασε η ώρα 15:00 της τελευταίας ημέρας) — τελικό αποτέλεσμα
         final_forecast = total_billed_net + val_pros_timologisi * 0.95
@@ -2170,6 +2203,12 @@ try:
         pacing_w = 0.0
         sales_time_pct = None
         pacing_reliable = False
+        # Κλειστή καμπάνια: τα νούμερα είναι πλέον ΤΕΛΙΚΑ, όχι πρόβλεψη
+        active_p25 = active_p50 = active_p75 = unique_orders_count
+        _removal_candidate_set = set(df_removals_raw['NameClean'].unique())
+        final_removal_count = len(_removal_candidate_set - names_with_any_order)
+        current_removal_count = final_removal_count
+        removal_p25 = removal_p50 = removal_p75 = final_removal_count
 
     # daily_required: όσο η καμπάνια είναι ανοιχτή, χρησιμοποιεί fractional days (precise)
     daily_required = remaining_to_target / max(days_left_precise, 1/24) if not is_closed else remaining_to_target
@@ -2692,6 +2731,24 @@ try:
                 seasonality_note = f" | 📅 Εποχ. {mn}: {arrow}{abs(season_diff):.0f}% vs ίδιο μήνα ({same_month_avg:,.0f}€ ιστ. μ.ο.)"
         except Exception:
             seasonality_note = ""
+
+        # === ΠΡΟΒΛΕΨΗ ΕΝΕΡΓΩΝ ΜΕΛΩΝ & ΔΙΑΓΡΑΦΩΝ ΣΤΟ ΚΛΕΙΣΙΜΟ ===
+        # Ίδια μεθοδολογία με το Ensemble Forecast (Monte Carlo) — απλά εξάγει
+        # διαφορετικά στατιστικά από τις ΙΔΙΕΣ προσομοιώσεις, οπότε είναι πλήρως
+        # συνεπές με την πρόβλεψη πωλήσεων.
+        st.markdown("### 👥 Πρόβλεψη Ενεργών & Διαγραφών στο Κλείσιμο")
+        fc1, fc2 = st.columns(2)
+        fc1.metric(
+            "👥 Ενεργά Μέλη (τελικό)", f"{active_p50}",
+            delta=f"+{active_p50 - unique_orders_count} από τώρα" if not is_closed else "Τελικό",
+            help=f"Εύρος πρόβλεψης: {active_p25}–{active_p75} μέλη | Τώρα: {unique_orders_count}"
+        )
+        fc2.metric(
+            "🗑️ Διαγραφές (τελικό)", f"{removal_p50}",
+            delta=(f"{removal_p50 - current_removal_count:+d} από τώρα" if not is_closed else "Τελικό"),
+            delta_color="inverse",
+            help=f"Εύρος πρόβλεψης: {removal_p25}–{removal_p75} διαγραφές | Τώρα: {current_removal_count}"
+        )
 
         st.markdown(f"""
         <div class="confidence-box">
