@@ -972,7 +972,10 @@ try:
         Ίδια λογική με το map_all_orders_to_schema — το raw NOT_PLACED_AN_ORDER
         export της Avon έχει το όνομα στη στήλη 'Στοιχεία Μέλους' και ΔΥΟ στήλες
         τηλεφώνου ('Κινητό...' και 'Πρωϊνό...') — χωρίς ρητή προτεραιότητα στο
-        'Κινητό', η γενική αναζήτηση έπιανε λάθος στήλη (Πρωινό).
+        'Κινητό', η γενική αναζήτηση έπιανε λάθος στήλη (Πρωινό). Επιπλέον
+        φιλτράρει ΜΟΝΟ την πιο πρόσφατη (τρέχουσα) καμπάνια, αν το αρχείο
+        περιέχει στήλη καμπάνιας — αποτρέπει να μπουν κατά λάθος μέσα και
+        παλαιότερες γραμμές.
         """
         df_raw = df_raw.copy()
         df_raw.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_raw.columns]
@@ -986,14 +989,30 @@ try:
 
         col_name  = find_col('ΣΤΟΙΧΕΙΑ ΜΕΛΟΥΣ', 'ΟΝΟΜΑ', 'NAME')
         col_phone = find_col('ΚΙΝΗΤΟ', 'ΤΗΛ', 'PHONE')
+        col_camp  = find_col('ΚΑΜΠ', 'CAMPAIGN')
 
         if not col_name:
-            return None, "Δεν βρέθηκε στήλη ονόματος (αναμενόταν 'Στοιχεία Μέλους')."
+            return None, "Δεν βρέθηκε στήλη ονόματος (αναμενόταν 'Στοιχεία Μέλους').", None
+
+        # === Φίλτρο ΜΟΝΟ τρέχουσας καμπάνιας ===
+        # Η στήλη καμπάνιας (π.χ. "Καμπάνια Παραγγελίας") έχει ΑΠΛΟ αριθμό
+        # (π.χ. "7"), ΟΧΙ την πλήρη μορφή YYYYMM (202607) — ίδιο μοτίβο με το
+        # "Καμπ." στο ALL_ORDERS. Κρατάμε μόνο την πιο πρόσφατη τιμή που
+        # βρίσκεται μέσα, και τη μετατρέπουμε σε YYYYMM χρησιμοποιώντας το
+        # τρέχον έτος (δεν υπάρχει στήλη ημερομηνίας εδώ για να το εξάγουμε,
+        # αφού πρόκειται για μέλη που ΔΕΝ έχουν παραγγείλει ακόμα).
+        detected_camp_note = None
+        if col_camp:
+            camp_nums = pd.to_numeric(df_raw[col_camp], errors='coerce').dropna()
+            if not camp_nums.empty:
+                latest_camp_num = int(sorted(camp_nums.unique(), reverse=True)[0])
+                df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == latest_camp_num].copy()
+                detected_camp_note = f"{date.today().year}{latest_camp_num:02d}"
 
         out = pd.DataFrame()
         out['Ονοματεπώνυμο'] = df_raw[col_name]
         out['Τηλέφωνο'] = df_raw[col_phone] if col_phone else None
-        return out, None
+        return out, None, detected_camp_note
 
     NOT_PLACED_CACHE = "not_placed_cache.csv"
 
@@ -1023,13 +1042,14 @@ try:
     if up_not_placed is not None:
         df_uploaded_notplaced = read_avon_export_file(up_not_placed)
         if df_uploaded_notplaced is not None and not df_uploaded_notplaced.empty:
-            df_mapped_np, err_np = map_not_placed_to_schema(df_uploaded_notplaced)
+            df_mapped_np, err_np, camp_note_np = map_not_placed_to_schema(df_uploaded_notplaced)
             if err_np:
                 st.sidebar.error(f"⚠️ {err_np}")
             else:
                 df_todo_raw = clean_duplicate_columns(df_mapped_np)
                 save_cached_not_placed(df_mapped_np)  # ΜΟΝΙΜΗ αποθήκευση — βλέπει και η βοηθός
-                st.sidebar.success(f"✅ NOT_PLACED: {len(df_mapped_np)} γραμμές φορτώθηκαν")
+                camp_suffix = f" (φιλτραρισμένο στην καμπάνια {camp_note_np})" if camp_note_np else ""
+                st.sidebar.success(f"✅ NOT_PLACED: {len(df_mapped_np)} γραμμές φορτώθηκαν{camp_suffix}")
         else:
             st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση του NOT_PLACED — έλεγξε τη μορφή αρχείου.")
 
