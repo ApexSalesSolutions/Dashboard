@@ -842,6 +842,55 @@ try:
     up_all_orders = st.sidebar.file_uploader("📦 ALL_ORDERS (→ Φύλλο1)", type=['xls', 'xlsx'], key="up_all_orders")
     up_not_placed = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER (→ Φύλλο2)", type=['xls', 'xlsx'], key="up_not_placed")
 
+    # === ΜΟΝΙΜΗ ΑΠΟΘΗΚΕΥΣΗ ΑΝΕΒΑΣΜΕΝΩΝ ΔΕΔΟΜΕΝΩΝ ===
+    # ΚΡΙΣΙΜΟ: το st.file_uploader είναι ΠΡΟΣΩΡΙΝΟ — υπάρχει μόνο όσο είναι
+    # ανοιχτό το συγκεκριμένο browser tab. Χωρίς αυτό το cache, αν ανανεώσεις τη
+    # σελίδα (ή αν η βοηθός σου ανοίξει το link) θα εξαφανιζόταν το upload και
+    # θα επέστρεφε στα (παλιά) δεδομένα του Google Sheet. Το cache αποθηκεύεται
+    # τοπικά και εφαρμόζεται ΑΥΤΟΜΑΤΑ σε κάθε άνοιγμα, μέχρι να ανεβάσεις κάτι
+    # πιο πρόσφατο ή να το καθαρίσεις χειροκίνητα.
+    UPLOADED_ORDERS_CACHE = "uploaded_all_orders_cache.csv"
+
+    def load_cached_upload():
+        if os.path.exists(UPLOADED_ORDERS_CACHE):
+            try:
+                df = pd.read_csv(UPLOADED_ORDERS_CACHE)
+                if 'Ημερομηνία' in df.columns:
+                    df['Ημερομηνία'] = pd.to_datetime(df['Ημερομηνία'], errors='coerce')
+                return df
+            except Exception:
+                return None
+        return None
+
+    def save_cached_upload(df):
+        try:
+            df.to_csv(UPLOADED_ORDERS_CACHE, index=False)
+        except Exception:
+            pass
+
+    def merge_cached_or_uploaded(df_base, df_new_mapped, camp_code):
+        """Αφαιρεί τις παλιές γραμμές της ίδιας καμπάνιας και προσθέτει τις νέες."""
+        camp_col_existing = next((c for c in df_base.columns if 'ΚΑΜΠΑΝΙΑ' in remove_accents(str(c)).upper()), None)
+        if camp_col_existing:
+            df_base = df_base[df_base[camp_col_existing] != camp_code]
+            df_new_mapped = df_new_mapped.rename(columns={'Καμπάνια': camp_col_existing})
+        df_base = clean_duplicate_columns(df_base)
+        df_new_mapped = clean_duplicate_columns(df_new_mapped)
+        result = pd.concat([df_base, df_new_mapped], ignore_index=True)
+        return clean_duplicate_columns(result)
+
+    # Αυτόματη εφαρμογή προηγούμενου (cached) upload — ΠΡΙΝ ελέγξουμε αν
+    # ανέβηκε κάτι νέο τώρα. Έτσι η τελευταία γνωστή ενημέρωση εμφανίζεται
+    # πάντα, ακόμα κι αν κανείς δεν ανεβάσει τίποτα αυτή τη φορά.
+    _cached_df = load_cached_upload()
+    if _cached_df is not None and not _cached_df.empty and up_all_orders is None:
+        try:
+            _cached_camp = int(_cached_df['Καμπάνια'].iloc[0])
+            df_sales_all = merge_cached_or_uploaded(df_sales_all, _cached_df, _cached_camp)
+            st.sidebar.caption(f"💾 Χρησιμοποιείται αποθηκευμένο ALL_ORDERS (καμπάνια {_cached_camp}). Ανέβασε νέο για ενημέρωση.")
+        except Exception:
+            pass
+
     if up_all_orders is not None:
         df_raw_orders = read_avon_export_file(up_all_orders)
         if df_raw_orders is not None and not df_raw_orders.empty:
@@ -858,19 +907,21 @@ try:
                 if confirmed_camp != derived_camp:
                     df_mapped['Καμπάνια'] = confirmed_camp
 
-                camp_col_existing = next((c for c in df_sales_all.columns if 'ΚΑΜΠΑΝΙΑ' in remove_accents(str(c)).upper()), None)
-                if camp_col_existing:
-                    df_sales_all = df_sales_all[df_sales_all[camp_col_existing] != confirmed_camp]
-                    df_mapped = df_mapped.rename(columns={'Καμπάνια': camp_col_existing})
-                # Καθαρισμός ΚΑΙ των δύο πλευρών πριν το concat — αποτρέπει
-                # οριστικά το "cannot assemble with duplicate keys".
-                df_sales_all = clean_duplicate_columns(df_sales_all)
-                df_mapped = clean_duplicate_columns(df_mapped)
-                df_sales_all = pd.concat([df_sales_all, df_mapped], ignore_index=True)
-                df_sales_all = clean_duplicate_columns(df_sales_all)
+                df_sales_all = merge_cached_or_uploaded(df_sales_all, df_mapped.copy(), confirmed_camp)
+                save_cached_upload(df_mapped)  # ΜΟΝΙΜΗ αποθήκευση — θα εφαρμόζεται αυτόματα από εδώ και πέρα
                 st.sidebar.success(f"✅ ALL_ORDERS: {len(df_mapped)} γραμμές φορτώθηκαν για την καμπάνια {confirmed_camp}")
         else:
             st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση του ALL_ORDERS — έλεγξε τη μορφή αρχείου.")
+
+    if os.path.exists(UPLOADED_ORDERS_CACHE):
+        if st.sidebar.button("🗑️ Καθαρισμός αποθηκευμένου upload", key="clear_upload_cache",
+                              help="Επιστροφή στα δεδομένα του Google Sheet, αγνοώντας το τελευταίο ανεβασμένο αρχείο."):
+            try:
+                os.remove(UPLOADED_ORDERS_CACHE)
+            except Exception:
+                pass
+            st.rerun()
+
 
     if up_not_placed is not None:
         df_uploaded_notplaced = read_avon_export_file(up_not_placed)
