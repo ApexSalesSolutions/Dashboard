@@ -3361,7 +3361,6 @@ try:
                             save_note(n, new_note)
                             member_notes[n] = new_note
                             st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
-                            st.rerun()
                 with mc2:
                     outcome_sel = st.selectbox(
                         "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
@@ -3369,7 +3368,6 @@ try:
                     )
                     if outcome_sel != "— Επίλεξε —":
                         mark_contacted(row_key, outcome=outcome_sel, display_name=r['Ονοματεπώνυμο'])
-                        st.rerun()
 
     if 'ai_advisor' in tab_idx:
         with tabs[tab_idx['ai_advisor']]:
@@ -3575,7 +3573,6 @@ try:
                             save_note(n, new_note)
                             member_notes[n] = new_note
                             st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
-                            st.rerun()
                     with gc2:
                         row_key = f"gpr_{n}"
                         outcome_sel_gpr = st.selectbox(
@@ -3584,7 +3581,6 @@ try:
                         )
                         if outcome_sel_gpr != "— Επίλεξε —":
                             mark_contacted(row_key, outcome=outcome_sel_gpr, display_name=row['Ονοματεπώνυμο'])
-                            st.rerun()
 
     if 'additions' in tab_idx:
         with tabs[tab_idx['additions']]:
@@ -3749,7 +3745,6 @@ try:
                             save_note(n, new_note)
                             member_notes[n] = new_note
                             st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
-                            st.rerun()
 
     with tabs[tab_idx['today']]:
         st.caption(
@@ -3840,7 +3835,6 @@ try:
                 )
                 if outcome_sel_today != "— Επίλεξε —":
                     mark_contacted(row_key, outcome=outcome_sel_today, display_name=row['Ονοματεπώνυμο'])
-                    st.rerun()
                 st.divider()
 
     if 'adjustments' in tab_idx:
