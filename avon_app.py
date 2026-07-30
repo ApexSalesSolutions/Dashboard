@@ -707,14 +707,47 @@ def create_campaign_report_pdf(report_data):
 SHEET_ID = "1hirqSVwtjB2_UdZVWh53lMDnogWSgjGHtQb--4Zzv_4"
 EXCEL_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
 
+def clean_duplicate_columns(df):
+    """
+    Καθαρίζει στήλες που προκαλούν 'cannot assemble with duplicate keys' σε
+    μελλοντικό pd.concat: (1) πολλαπλές εντελώς κενές/ανώνυμες στήλες (π.χ.
+    'Unnamed: 6', ή κυριολεκτικά None ως όνομα στήλης — συνηθισμένο σε Google
+    Sheets exports με άδειες trailing στήλες), και (2) οποιαδήποτε ΕΝΑΠΟΜΕΙΝΑΝΤΑ
+    διπλότυπα ονόματα στηλών (ασφάλεια, μετονομάζει σε .1, .2 κλπ αντί να σκάει).
+    """
+    df = df.copy()
+    df.columns = [re.sub(r'\s+', ' ', str(c)).strip() if pd.notna(c) else c for c in df.columns]
+
+    cols_to_drop = []
+    for i, c in enumerate(df.columns):
+        is_unnamed = pd.isna(c) or str(c).strip() == '' or str(c).lower().startswith('unnamed')
+        if is_unnamed and df.iloc[:, i].isna().all():
+            cols_to_drop.append(df.columns[i])
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+
+    if df.columns.duplicated().any():
+        seen = {}
+        new_cols = []
+        for c in df.columns:
+            if c in seen:
+                seen[c] += 1
+                new_cols.append(f"{c}.{seen[c]}")
+            else:
+                seen[c] = 0
+                new_cols.append(c)
+        df.columns = new_cols
+
+    return df
+
 try:
     response = requests.get(EXCEL_URL)
     xls = pd.ExcelFile(BytesIO(response.content))
     
-    df_sales_all = pd.read_excel(xls, sheet_name=0)
-    df_todo_raw = pd.read_excel(xls, sheet_name=1)
-    df_removals_raw = pd.read_excel(xls, sheet_name=2)
-    df_members_raw = pd.read_excel(xls, sheet_name=3)
+    df_sales_all = clean_duplicate_columns(pd.read_excel(xls, sheet_name=0))
+    df_todo_raw = clean_duplicate_columns(pd.read_excel(xls, sheet_name=1))
+    df_removals_raw = clean_duplicate_columns(pd.read_excel(xls, sheet_name=2))
+    df_members_raw = clean_duplicate_columns(pd.read_excel(xls, sheet_name=3))
 
     # =========================================================
     # ΑΠ' ΕΥΘΕΙΑΣ UPLOAD RAW AVON EXPORTS — παρακάμπτει εντελώς το
@@ -829,7 +862,12 @@ try:
                 if camp_col_existing:
                     df_sales_all = df_sales_all[df_sales_all[camp_col_existing] != confirmed_camp]
                     df_mapped = df_mapped.rename(columns={'Καμπάνια': camp_col_existing})
+                # Καθαρισμός ΚΑΙ των δύο πλευρών πριν το concat — αποτρέπει
+                # οριστικά το "cannot assemble with duplicate keys".
+                df_sales_all = clean_duplicate_columns(df_sales_all)
+                df_mapped = clean_duplicate_columns(df_mapped)
                 df_sales_all = pd.concat([df_sales_all, df_mapped], ignore_index=True)
+                df_sales_all = clean_duplicate_columns(df_sales_all)
                 st.sidebar.success(f"✅ ALL_ORDERS: {len(df_mapped)} γραμμές φορτώθηκαν για την καμπάνια {confirmed_camp}")
         else:
             st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση του ALL_ORDERS — έλεγξε τη μορφή αρχείου.")
