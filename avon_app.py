@@ -1027,6 +1027,27 @@ try:
     camp_key_str = str(selected_camp)
     saved = all_goals.get(camp_key_str, {})
 
+    # === ΟΝΟΜΑ ΒΟΗΘΟΥ (για προσωπικό χαιρετισμό στη Λειτουργία Βοηθού) ===
+    # Αποθηκεύεται μόνιμα, ρυθμίζεται ΜΟΝΟ από σένα (κρυμμένο σε λειτουργία
+    # βοηθού) — η βοηθός απλά βλέπει το αποτέλεσμα, δεν μπορεί να το αλλάξει.
+    assistant_name = all_goals.get("_assistant_name", "")
+    if not is_assistant_mode:
+        st.sidebar.markdown("---")
+        new_assistant_name = st.sidebar.text_input(
+            "🙋 Όνομα Βοηθού", value=assistant_name,
+            placeholder="π.χ. Georgia",
+            help="Θα εμφανίζεται ως προσωπικός χαιρετισμός στην κορυφή της Λειτουργίας Βοηθού."
+        )
+        if new_assistant_name != assistant_name:
+            all_goals["_assistant_name"] = new_assistant_name
+            save_goals(all_goals)
+            assistant_name = new_assistant_name
+
+    # === ΔΥΝΑΜΙΚΟΣ ΧΑΙΡΕΤΙΣΜΟΣ ΩΡΑΣ ===
+    def get_time_greeting():
+        h = datetime.now().hour
+        return "Καλημέρα" if h < 17 else "Καλησπέρα"
+
     # === ΜΟΝΙΜΗ ΑΠΟΘΗΚΕΥΣΗ "✓ Ok" ===
     # Πριν, το st.session_state.sent_ids ζούσε ΜΟΝΟ στη μνήμη της συνεδρίας —
     # έσβηνε αν κλείσει το tab, ξαναφορτωθεί η σελίδα, ή "κοιμηθεί" το app (κοινό
@@ -2249,6 +2270,17 @@ try:
     # ==========================================
 
     st.title(f"🛡️ Strategic AI Command Center - {selected_camp}")
+
+    if is_assistant_mode:
+        _greet_name = f" {assistant_name}" if assistant_name else ""
+        st.markdown(
+            f"<div style='padding:14px 20px;border-radius:12px;"
+            f"background:linear-gradient(135deg, rgba(255,105,180,0.15) 0%, rgba(115,96,242,0.15) 100%);"
+            f"border:1px solid rgba(255,105,180,0.3);margin-bottom:16px;'>"
+            f"<span style='font-size:20px;font-weight:700;color:#ffffff;'>👋 {get_time_greeting()}{_greet_name}!</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
     # ==========================================
     # DATA HEALTH CHECK — εντοπίζει προβλήματα ποιότητας δεδομένων
