@@ -740,14 +740,31 @@ def clean_duplicate_columns(df):
 
     return df
 
-try:
-    response = requests.get(EXCEL_URL)
+# === CACHED DATA FETCH ===
+# ΚΡΙΣΙΜΟ ΓΙΑ ΤΑΧΥΤΗΤΑ: το Streamlit ξανατρέχει ΟΛΟΚΛΗΡΟ το script σε ΚΑΘΕ
+# αλληλεπίδραση (κλικ, πληκτρολόγηση σημείωσης, toggle κλπ) — χωρίς caching,
+# αυτό σήμαινε ότι το ΟΛΟΚΛΗΡΟ Google Sheet ξαναφορτωνόταν από το δίκτυο σε
+# ΚΑΘΕ μονή αλλαγή, κάνοντας ακόμα και μια απλή σημείωση αργή. Με το
+# @st.cache_data, το αποτέλεσμα "παγώνει" για 5 λεπτά — μέσα σε αυτό το
+# διάστημα, όσες αλλαγές κι αν κάνεις, δεν ξαναφορτώνεται το Sheet από το
+# μηδέν, μόνο οι υπολογισμοί που πραγματικά χρειάζονται τρέχουν ξανά.
+@st.cache_data(ttl=300, show_spinner="📥 Φόρτωση δεδομένων από Google Sheets...")
+def fetch_sheet_data(url):
+    response = requests.get(url)
     xls = pd.ExcelFile(BytesIO(response.content))
-    
-    df_sales_all = clean_duplicate_columns(pd.read_excel(xls, sheet_name=0))
-    df_todo_raw = clean_duplicate_columns(pd.read_excel(xls, sheet_name=1))
-    df_removals_raw = clean_duplicate_columns(pd.read_excel(xls, sheet_name=2))
-    df_members_raw = clean_duplicate_columns(pd.read_excel(xls, sheet_name=3))
+    df_sales = pd.read_excel(xls, sheet_name=0)
+    df_todo = pd.read_excel(xls, sheet_name=1)
+    df_removals = pd.read_excel(xls, sheet_name=2)
+    df_members = pd.read_excel(xls, sheet_name=3)
+    return df_sales, df_todo, df_removals, df_members
+
+try:
+    df_sales_all, df_todo_raw, df_removals_raw, df_members_raw = fetch_sheet_data(EXCEL_URL)
+
+    df_sales_all = clean_duplicate_columns(df_sales_all)
+    df_todo_raw = clean_duplicate_columns(df_todo_raw)
+    df_removals_raw = clean_duplicate_columns(df_removals_raw)
+    df_members_raw = clean_duplicate_columns(df_members_raw)
 
     # =========================================================
     # ΑΠ' ΕΥΘΕΙΑΣ UPLOAD RAW AVON EXPORTS — παρακάμπτει εντελώς το
@@ -1001,6 +1018,10 @@ try:
     else:
         st.sidebar.header("🚀 Διαχείριση")
         selected_camp = st.sidebar.selectbox("Ενεργή Καμπάνια", available_camps)
+        if st.sidebar.button("🔄 Ανανέωση Δεδομένων Τώρα", key="force_refresh",
+                              help="Παρακάμπτει το cache 5 λεπτών — χρήσιμο αν μόλις ενημέρωσες το Google Sheet και θες να το δεις αμέσως."):
+            fetch_sheet_data.clear()
+            st.rerun()
 
     # === ΛΕΙΤΟΥΡΓΙΑ ΒΟΗΘΟΥ (ορίζεται νωρίς ώστε να κρύβει ΚΑΙ τα στοιχεία του
     # sidebar — στόχους, ποσά, calibration — όχι μόνο το κυρίως περιεχόμενο) ===
