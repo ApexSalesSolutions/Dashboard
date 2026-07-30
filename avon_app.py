@@ -1390,6 +1390,7 @@ try:
         goal_sales = float(saved.get("sales", 32226.0))
         goal_actives = int(saved.get("actives", 0))
         goal_removals = int(saved.get("removals", 0))
+        goal_stencil_growth = int(saved.get("stencil_growth", 0))
     else:
         st.sidebar.markdown("---")
         st.sidebar.subheader("🎯 Στόχοι Καμπάνιας")
@@ -1401,9 +1402,14 @@ try:
                                                 value=int(saved.get("actives", 0)))
         goal_removals= st.sidebar.number_input("🗑️ Στόχος Διαγραφών",      min_value=0,   step=1,
                                                 value=int(saved.get("removals", 0)))
+        goal_stencil_growth = st.sidebar.number_input(
+            "📈 Στόχος Stencil Growth", step=1,
+            value=int(saved.get("stencil_growth", 0)),
+            help="Stencil Growth = Additions − Διαγραφές. Καθαρή ανάπτυξη ομάδας αυτή την καμπάνια. Ορατό μόνο σε σένα."
+        )
 
         # Αποθήκευση αν άλλαξε κάτι
-        new_saved = {"sales": goal_sales, "actives": goal_actives, "removals": goal_removals}
+        new_saved = {"sales": goal_sales, "actives": goal_actives, "removals": goal_removals, "stencil_growth": goal_stencil_growth}
         if new_saved != saved:
             all_goals[camp_key_str] = new_saved
             save_goals(all_goals)
@@ -3160,6 +3166,29 @@ try:
     df_winbacks = pd.DataFrame(winback_rows)
     if not df_winbacks.empty:
         df_winbacks = df_winbacks.sort_values('Καμπάνιες Απουσίας', ascending=False).reset_index(drop=True)
+
+    # === STENCIL GROWTH (μόνο για σένα) ===
+    # Stencil Growth = Additions − Διαγραφές: η καθαρή ανάπτυξη της ομάδας
+    # αυτή την καμπάνια. Χρησιμοποιεί τον τρέχοντα αριθμό Additions (ήδη
+    # επιβεβαιωμένο, όχι πρόβλεψη — μόλις κάποια παραγγείλει είναι οριστικά
+    # Addition) και τόσο τον τρέχοντα ΟΣΟ και τον προβλεπόμενο-στο-κλείσιμο
+    # αριθμό διαγραφών (current_removal_count / removal_p50, ήδη υπολογισμένα
+    # παραπάνω στο Ensemble Forecast).
+    if not is_assistant_mode:
+        stencil_growth_now = len(df_winbacks) - current_removal_count
+        stencil_growth_forecast = len(df_winbacks) - removal_p50
+        sg_color = "#28a745" if stencil_growth_now >= goal_stencil_growth else "#dc3545"
+        st.markdown(
+            f"<div style='padding:14px 18px;border-radius:10px;background:var(--surface-1,#1e1e2e);"
+            f"border:1px solid {sg_color};margin:14px 0;'>"
+            f"<span style='font-size:13px;color:#888;'>📈 STENCIL GROWTH (Additions − Διαγραφές)</span><br>"
+            f"<span style='font-size:26px;font-weight:bold;color:{sg_color};'>{stencil_growth_now:+d}</span>"
+            + (f"<span style='font-size:13px;color:#888;margin-left:10px;'>στόχος: {goal_stencil_growth:+d}</span>" if goal_stencil_growth else "")
+            + f"<br><span style='font-size:12px;color:#888;'>Additions τώρα: {len(df_winbacks)} | Διαγραφές τώρα: {current_removal_count} | "
+              f"Προβλεπόμενο στο κλείσιμο (με βάση την πρόβλεψη διαγραφών): {stencil_growth_forecast:+d}</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
     # === Δυναμική λίστα tabs — στη Λειτουργία Βοηθού, τα μη-διαθέσιμα tabs
     # (AI Advisor, Προς Τιμολόγηση, Τιμολογημένες, Additions, Adjustments) ΔΕΝ
