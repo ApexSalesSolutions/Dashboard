@@ -771,6 +771,126 @@ def fetch_sheet_data(url):
     df_members = pd.read_excel(xls, sheet_name=3)
     return df_sales, df_todo, df_removals, df_members
 
+# === CACHED: campaign_stats + tier_basket_history ===
+# Το πιο ακριβό κομμάτι μετά το Monte Carlo — διατρέχει ΟΛΕΣ τις ιστορικές
+# καμπάνιες × όλα τα μέλη. Εξαρτάται ΜΟΝΟ από τα δεδομένα (df_sales_all,
+# df_members_raw) και την επιλεγμένη καμπάνια — ΟΧΙ από την ώρα ή από στοιχεία
+# session (σημειώσεις, ✓Ok) — οπότε το caching εδώ είναι απόλυτα ασφαλές.
+@st.cache_data(ttl=300, show_spinner="🧮 Υπολογισμός ιστορικών στατιστικών...")
+def compute_campaign_stats(df_sales_all, df_members_raw, camp_col, status_col_global, selected_camp_str, total_members_count):
+    campaign_stats = {}
+    tier_conversions = {t: {'total': 0, 'billed': 0} for t in ['DIAMOND', 'PLATINUM', 'GOLD', 'SILVER', 'BRONZE', 'STANDARD', 'NEW BUSINESS']}
+    for camp_name in df_sales_all[camp_col].unique():
+        # ΚΡΙΣΙΜΟ: το campaign_stats πρέπει να περιέχει ΜΟΝΟ ολοκληρωμένες
+        # ιστορικές καμπάνιες — η ΤΡΕΧΟΥΣΑ (ημιτελής) καμπάνια αποκλείεται ρητά.
+        if str(camp_name) == selected_camp_str:
+            continue
+        df_camp = df_sales_all[df_sales_all[camp_col] == camp_name].copy()
+        df_camp['_StatusTmp'] = df_camp[status_col_global].apply(remove_accents).str.upper()
+        df_camp = df_camp[~df_camp['_StatusTmp'].str.contains('ΑΚΥΡ|ΑΠΟΡ|CANCEL|REJECT', na=False)]
+        billed_mask_camp = df_camp['_StatusTmp'].str.contains('ΤΙΜΟΛΟΓ|ΠΑΡΑΔΟΔ|ΠΑΡΑΔΟΘ', na=False)
+        billed_names_camp = set(df_camp[billed_mask_camp & (df_camp['Ποσό_Net'] > 0.01)]['NameClean'])
+        total_net_camp = df_camp[billed_mask_camp]['Ποσό_Net'].sum()
+
+        if len(billed_names_camp) > 0:
+            campaign_stats[camp_name] = {
+                'total_net': total_net_camp,
+                'unique_members': len(billed_names_camp),
+                'avg_basket': total_net_camp / len(billed_names_camp),
+                'conversion_rate': len(billed_names_camp) / max(1, total_members_count),
+                'billed_names': billed_names_camp
+            }
+
+        for _, m in df_members_raw.iterrows():
+            if pd.notna(m.get('Tier')):
+                tier_conversions[m['Tier']]['total'] += 1
+                if m['NameClean'] in billed_names_camp:
+                    tier_conversions[m['Tier']]['billed'] += 1
+
+    tier_conversion_rates = {}
+    for t, data in tier_conversions.items():
+        tier_conversion_rates[t] = data['billed'] / max(1, data['total']) if data['total'] > 0 else 0.50
+
+    # === ΔΥΝΑΜΙΚΟΣ ΥΠΟΛΟΓΙΣΜΟΣ TIER BASKETS από ιστορικά ===
+    tier_basket_history = {t: [] for t in _TIER_FALLBACK_DEFAULTS}
+    dynamic_tier_baskets_local = {}
+
+    for camp_name in sorted(campaign_stats.keys()):
+        df_camp_t = df_sales_all[df_sales_all[camp_col] == camp_name].copy()
+        df_camp_t['_StatusTmp'] = df_camp_t[status_col_global].apply(remove_accents).str.upper()
+        df_camp_t = df_camp_t[~df_camp_t['_StatusTmp'].str.contains('ΑΚΥΡ|ΑΠΟΡ|CANCEL|REJECT', na=False)]
+        bm_t = df_camp_t['_StatusTmp'].str.contains('ΤΙΜΟΛΟΓ|ΠΑΡΑΔΟΔ|ΠΑΡΑΔΟΘ', na=False)
+        df_billed_t = df_camp_t[bm_t & (df_camp_t['Ποσό_Net'] > 0.01)].copy()
+
+        if df_billed_t.empty:
+            continue
+
+        name_to_tier = dict(zip(df_members_raw['NameClean'], df_members_raw['Tier']))
+        df_billed_t['_Tier'] = df_billed_t['NameClean'].map(name_to_tier).fillna('STANDARD')
+
+        member_totals = df_billed_t.groupby(['NameClean', '_Tier'])['Ποσό_Net'].sum().reset_index()
+        tier_groups = member_totals.groupby('_Tier')['Ποσό_Net'].mean()
+        for tier_name, avg_val in tier_groups.items():
+            if tier_name in tier_basket_history and avg_val > 5:
+                tier_basket_history[tier_name].append(avg_val)
+
+    for tier_name, values in tier_basket_history.items():
+        if len(values) >= 2:
+            w = np.array([1.0 + 2.0 * (i / max(1, len(values) - 1)) for i in range(len(values))])
+            dynamic_tier_baskets_local[tier_name] = float(np.average(values, weights=w))
+        elif len(values) == 1:
+            dynamic_tier_baskets_local[tier_name] = values[0]
+
+    return campaign_stats, tier_conversion_rates, dynamic_tier_baskets_local, tier_basket_history
+
+# === CACHED: history_detailed (ανά μέλος, ανά ιστορική καμπάνια) ===
+# Group-by πάνω σε ΟΛΟ το ιστορικό sales sheet — δεύτερο πιο ακριβό κομμάτι
+# μετά το campaign_stats. Εξαρτάται ΜΟΝΟ από τα δεδομένα + τη λίστα ιστορικών
+# καμπανιών, όχι από session state (σημειώσεις, ✓Ok), οπότε το caching είναι
+# ασφαλές και αόρατο στη λειτουργικότητα.
+@st.cache_data(ttl=300, show_spinner="🧮 Υπολογισμός ιστορικού ανά μέλος...")
+def compute_history_detailed(df_sales_all, camp_col, status_col_global, historical_camps):
+    sheet4_history = {}
+    history_detailed = {}
+    all_historical_nets = []
+
+    df_hist_all = df_sales_all[df_sales_all[camp_col].isin(historical_camps)].copy()
+    if not df_hist_all.empty:
+        df_hist_all['_StatusTmp'] = df_hist_all[status_col_global].apply(lambda x: remove_accents(str(x)).upper())
+        df_hist_all = df_hist_all[~df_hist_all['_StatusTmp'].str.contains('ΑΚΥΡ|ΑΠΟΡ|CANCEL|REJECT', na=False)]
+        df_hist_all = df_hist_all[df_hist_all['Ποσό_Net'] > 0.01]
+        hist_grouped = df_hist_all.groupby(['NameClean', camp_col])['Ποσό_Net'].sum().reset_index()
+    else:
+        hist_grouped = pd.DataFrame(columns=['NameClean', camp_col, 'Ποσό_Net'])
+
+    # === ΙΣΤΟΡΙΚΟΤΗΤΑ ΑΠΟΚΛΕΙΣΤΙΚΑ ΑΠΟ ΤΟ ΦΥΛΛΟ1 === (βλ. αναλυτικό σχόλιο στο
+    # git history — το ιστορικό χτίζεται loop πάνω σε ό,τι όνομα υπάρχει ήδη
+    # στο Φύλλο1, όχι πάνω στα ονόματα του Φύλλο4, ώστε να ταιριάζουν πάντα
+    # με την τρέχουσα καμπάνια που ΚΙ ΑΥΤΗ προέρχεται από το Φύλλο1.)
+    all_hist_names = hist_grouped['NameClean'].unique().tolist() if not hist_grouped.empty else []
+
+    for name in all_hist_names:
+        entries = []
+        member_hist = hist_grouped[hist_grouped['NameClean'] == name]
+        for pidx, camp in enumerate(historical_camps):
+            camp_data = member_hist[member_hist[camp_col] == camp]
+            if not camp_data.empty:
+                net_val = camp_data['Ποσό_Net'].iloc[0]
+                entries.append({'period_idx': pidx, 'net_value': net_val})
+        if entries:
+            history_detailed[name] = entries
+            avg_net = sum(e['net_value'] for e in entries) / len(entries)
+            sheet4_history[name] = avg_net
+            all_historical_nets.append(avg_net)
+
+    if all_historical_nets:
+        valid_nets = [n for n in all_historical_nets if n > 15]
+        global_avg_basket = sum(valid_nets) / len(valid_nets) if valid_nets else 65.0
+    else:
+        global_avg_basket = 65.0
+
+    return history_detailed, sheet4_history, all_historical_nets, global_avg_basket
+
 try:
     df_sales_all, df_todo_raw, df_removals_raw, df_members_raw = fetch_sheet_data(EXCEL_URL)
 
@@ -967,7 +1087,7 @@ try:
             st.rerun()
 
 
-    def map_not_placed_to_schema(df_raw):
+    def map_not_placed_to_schema(df_raw, manual_camp_code=None):
         """
         Ίδια λογική με το map_all_orders_to_schema — το raw NOT_PLACED_AN_ORDER
         export της Avon έχει το όνομα στη στήλη 'Στοιχεία Μέλους' και ΔΥΟ στήλες
@@ -975,7 +1095,8 @@ try:
         'Κινητό', η γενική αναζήτηση έπιανε λάθος στήλη (Πρωινό). Επιπλέον
         φιλτράρει ΜΟΝΟ την πιο πρόσφατη (τρέχουσα) καμπάνια, αν το αρχείο
         περιέχει στήλη καμπάνιας — αποτρέπει να μπουν κατά λάθος μέσα και
-        παλαιότερες γραμμές.
+        παλαιότερες γραμμές. Αν δοθεί manual_camp_code (YYYYMM), φιλτράρει με
+        βάση αυτό αντί για την αυτόματη ανίχνευση.
         """
         df_raw = df_raw.copy()
         df_raw.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_raw.columns]
@@ -1000,14 +1121,20 @@ try:
         # "Καμπ." στο ALL_ORDERS. Κρατάμε μόνο την πιο πρόσφατη τιμή που
         # βρίσκεται μέσα, και τη μετατρέπουμε σε YYYYMM χρησιμοποιώντας το
         # τρέχον έτος (δεν υπάρχει στήλη ημερομηνίας εδώ για να το εξάγουμε,
-        # αφού πρόκειται για μέλη που ΔΕΝ έχουν παραγγείλει ακόμα).
+        # αφού πρόκειται για μέλη που ΔΕΝ έχουν παραγγείλει ακόμα) — εκτός αν ο
+        # χρήστης δώσει ρητά manual_camp_code, οπότε φιλτράρουμε με βάση αυτό.
         detected_camp_note = None
         if col_camp:
             camp_nums = pd.to_numeric(df_raw[col_camp], errors='coerce').dropna()
             if not camp_nums.empty:
-                latest_camp_num = int(sorted(camp_nums.unique(), reverse=True)[0])
-                df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == latest_camp_num].copy()
-                detected_camp_note = f"{date.today().year}{latest_camp_num:02d}"
+                if manual_camp_code:
+                    target_num = int(str(int(manual_camp_code))[-2:])
+                    df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == target_num].copy()
+                    detected_camp_note = str(int(manual_camp_code))
+                else:
+                    latest_camp_num = int(sorted(camp_nums.unique(), reverse=True)[0])
+                    df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == latest_camp_num].copy()
+                    detected_camp_note = f"{date.today().year}{latest_camp_num:02d}"
 
         out = pd.DataFrame()
         out['Ονοματεπώνυμο'] = df_raw[col_name]
@@ -1046,6 +1173,18 @@ try:
             if err_np:
                 st.sidebar.error(f"⚠️ {err_np}")
             else:
+                if camp_note_np:
+                    derived_camp_np = int(camp_note_np)
+                    confirmed_camp_np = st.sidebar.number_input(
+                        "Επιβεβαίωση καμπάνιας NOT_PLACED (YYYYMM)",
+                        value=derived_camp_np, step=1, key="confirm_camp_code_np",
+                        help="Αυτόματα παράχθηκε από τη στήλη καμπάνιας του αρχείου + το τρέχον έτος. Διόρθωσε αν χρειάζεται (π.χ. γύρω από αλλαγή έτους)."
+                    )
+                    if confirmed_camp_np != derived_camp_np:
+                        df_mapped_np, err_np, camp_note_np = map_not_placed_to_schema(
+                            df_uploaded_notplaced, manual_camp_code=confirmed_camp_np
+                        )
+
                 df_todo_raw = clean_duplicate_columns(df_mapped_np)
                 save_cached_not_placed(df_mapped_np)  # ΜΟΝΙΜΗ αποθήκευση — βλέπει και η βοηθός
                 camp_suffix = f" (φιλτραρισμένο στην καμπάνια {camp_note_np})" if camp_note_np else ""
@@ -1360,83 +1499,20 @@ try:
     
     df_members_raw['Tier'] = df_members_raw['Ονοματεπώνυμο'].apply(get_tier_from_name)
 
-    campaign_stats = {}
-    tier_conversions = {t: {'total': 0, 'billed': 0} for t in ['DIAMOND', 'PLATINUM', 'GOLD', 'SILVER', 'BRONZE', 'STANDARD', 'NEW BUSINESS']}
-    for camp_name in df_sales_all[camp_col].unique():
-        # ΚΡΙΣΙΜΟ: το campaign_stats πρέπει να περιέχει ΜΟΝΟ ολοκληρωμένες
-        # ιστορικές καμπάνιες. Χωρίς αυτό το φίλτρο, η ΤΡΕΧΟΥΣΑ (ημιτελής)
-        # καμπάνια έμπαινε μέσα με το ΜΕΡΙΚΟ της σύνολο μέχρι σήμερα (π.χ. 13.420€
-        # ενώ βρισκόμαστε ακόμα στα μισά του μήνα) — τραβώντας τεχνητά προς τα
-        # κάτω τον ιστορικό μέσο όρο, το ελάχιστο, και κάθε forecast/σύγκριση
-        # που βασίζεται σε αυτά (Historical Trend, Pacing floor, Goal Recommendation,
-        # Team Health, Year-over-Year, best-campaign-ever κ.ά.).
-        if str(camp_name) == str(selected_camp):
-            continue
-        df_camp = df_sales_all[df_sales_all[camp_col] == camp_name].copy()
-        df_camp['_StatusTmp'] = df_camp[status_col_global].apply(remove_accents).str.upper()
-        df_camp = df_camp[~df_camp['_StatusTmp'].str.contains('ΑΚΥΡ|ΑΠΟΡ|CANCEL|REJECT', na=False)]
-        billed_mask_camp = df_camp['_StatusTmp'].str.contains('ΤΙΜΟΛΟΓ|ΠΑΡΑΔΟΔ|ΠΑΡΑΔΟΘ', na=False)
-        billed_names_camp = set(df_camp[billed_mask_camp & (df_camp['Ποσό_Net'] > 0.01)]['NameClean'])
-        total_net_camp = df_camp[billed_mask_camp]['Ποσό_Net'].sum()
+    # === CACHED: campaign_stats + tier_basket_history ===
+    # Αυτό το κομμάτι είναι το πιο ακριβό υπολογιστικά μετά το Monte Carlo —
+    # διατρέχει ΟΛΕΣ τις ιστορικές καμπάνιες × όλα τα μέλη, κάτι που ξανάτρεχε
+    # σε ΚΑΘΕ αλληλεπίδραση (ακόμα και ένα ✓Ok σε ένα μέλος). Εξαρτάται ΜΟΝΟ
+    # από τα δεδομένα (όχι από την ώρα), οπότε το caching εδώ είναι ασφαλές και
+    # δίνει τεράστια βελτίωση ταχύτητας.
+    campaign_stats, tier_conversion_rates, dynamic_tier_baskets_computed, tier_basket_history = \
+        compute_campaign_stats(df_sales_all, df_members_raw, camp_col, status_col_global, str(selected_camp), total_members_count)
 
-        if len(billed_names_camp) > 0:
-            campaign_stats[camp_name] = {
-                'total_net': total_net_camp,
-                'unique_members': len(billed_names_camp),
-                'avg_basket': total_net_camp / len(billed_names_camp),
-                'conversion_rate': len(billed_names_camp) / max(1, total_members_count),
-                'billed_names': billed_names_camp
-            }
-            
-        for _, m in df_members_raw.iterrows():
-            if pd.notna(m.get('Tier')):
-                tier_conversions[m['Tier']]['total'] += 1
-                if m['NameClean'] in billed_names_camp:
-                    tier_conversions[m['Tier']]['billed'] += 1
-
-    # Ιστορικά στατιστικά ομάδας (μέσοι όροι από ΟΛΕΣ τις καμπάνιες)
-    tier_conversion_rates = {}
-    for t, data in tier_conversions.items():
-        tier_conversion_rates[t] = data['billed'] / max(1, data['total']) if data['total'] > 0 else 0.50
-
-    # =========================================================
-    # ΔΥΝΑΜΙΚΟΣ ΥΠΟΛΟΓΙΣΜΟΣ TIER BASKETS από ιστορικά (βελτίωση #7)
-    # Για κάθε tier: EWMA μ.ο. καλαθιού από όλες τις ιστορικές καμπάνιες
-    # Αντικαθιστά τα hardcoded 530/217/90/45/35/65 με πραγματικά δεδομένα
-    # =========================================================
-    tier_basket_history = {t: [] for t in _TIER_FALLBACK_DEFAULTS}
-
-    for camp_name in sorted(campaign_stats.keys()):  # χρονολογική σειρά
-        df_camp_t = df_sales_all[df_sales_all[camp_col] == camp_name].copy()
-        df_camp_t['_StatusTmp'] = df_camp_t[status_col_global].apply(remove_accents).str.upper()
-        df_camp_t = df_camp_t[~df_camp_t['_StatusTmp'].str.contains('ΑΚΥΡ|ΑΠΟΡ|CANCEL|REJECT', na=False)]
-        bm_t = df_camp_t['_StatusTmp'].str.contains('ΤΙΜΟΛΟΓ|ΠΑΡΑΔΟΔ|ΠΑΡΑΔΟΘ', na=False)
-        df_billed_t = df_camp_t[bm_t & (df_camp_t['Ποσό_Net'] > 0.01)].copy()
-
-        if df_billed_t.empty:
-            continue
-
-        # Προσθήκη tier ανά παραγγελία
-        name_to_tier = dict(zip(df_members_raw['NameClean'], df_members_raw['Tier']))
-        df_billed_t['_Tier'] = df_billed_t['NameClean'].map(name_to_tier).fillna('STANDARD')
-
-        # ΚΡΙΣΙΜΟ: πρώτα SUM ανά μέλος (ένα μέλος = πολλές γραμμές),
-        # μετά μέσος όρος των συνόλων ανά tier → πραγματικό "καλάθι" μέλους
-        member_totals = df_billed_t.groupby(['NameClean', '_Tier'])['Ποσό_Net'].sum().reset_index()
-        tier_groups = member_totals.groupby('_Tier')['Ποσό_Net'].mean()
-        for tier_name, avg_val in tier_groups.items():
-            if tier_name in tier_basket_history and avg_val > 5:
-                tier_basket_history[tier_name].append(avg_val)
-
-    # EWMA: πιο πρόσφατες καμπάνιες βαρύτερες (3×)
-    for tier_name, values in tier_basket_history.items():
-        if len(values) >= 2:
-            w = np.array([1.0 + 2.0 * (i / max(1, len(values) - 1)) for i in range(len(values))])
-            _dynamic_tier_baskets[tier_name] = float(np.average(values, weights=w))
-        elif len(values) == 1:
-            _dynamic_tier_baskets[tier_name] = values[0]
-        # Αν δεν υπάρχουν δεδομένα, το get_manual_fallback() χρησιμοποιεί τα defaults
-
+    # Ενημέρωση του global _dynamic_tier_baskets από το (πιθανώς cached)
+    # αποτέλεσμα — ΚΡΙΣΙΜΟ να γίνεται ΠΑΝΤΑ, ακόμα και σε cache hit, αφού το
+    # get_manual_fallback() διαβάζει από το global dict, όχι από επιστρεφόμενη τιμή.
+    _dynamic_tier_baskets.clear()
+    _dynamic_tier_baskets.update(dynamic_tier_baskets_computed)
 
     hist_conversion_rates = [s['conversion_rate'] for s in campaign_stats.values()]
     hist_avg_baskets = [s['avg_basket'] for s in campaign_stats.values()]
@@ -1552,57 +1628,16 @@ try:
     # ΒΕΛΤΙΩΜΕΝΗ ΙΣΤΟΡΙΚΟΤΗΤΑ ΑΠΟ ΤΟ ΦΥΛΛΟ 1 (ΟΛΕΣ ΟΙ ΚΑΜΠΑΝΙΕΣ)
     # Χτίζει το ιστορικό χρησιμοποιώντας τα πραγματικά τιμολογημένα ποσά
     # =========================================================
-    sheet4_history = {}          
-    history_detailed = {}        
-    all_historical_nets = []
-    
     # Βρίσκουμε τις ιστορικές καμπάνιες (όλες όσες είναι ΠΡΙΝ από την selected_camp)
     historical_camps = sorted([c for c in available_camps if str(c) < str(selected_camp)])
-    
-    # Ετοιμάζουμε ένα γρήγορο λεξικό από το df_sales_all για να μην κάνουμε αργά queries στο loop
-    df_hist_all = df_sales_all[df_sales_all[camp_col].isin(historical_camps)].copy()
-    if not df_hist_all.empty:
-        df_hist_all['_StatusTmp'] = df_hist_all[status_col_global].apply(lambda x: remove_accents(str(x)).upper())
-        df_hist_all = df_hist_all[~df_hist_all['_StatusTmp'].str.contains('ΑΚΥΡ|ΑΠΟΡ|CANCEL|REJECT', na=False)]
-        df_hist_all = df_hist_all[df_hist_all['Ποσό_Net'] > 0.01]
-        
-        hist_grouped = df_hist_all.groupby(['NameClean', camp_col])['Ποσό_Net'].sum().reset_index()
-    else:
-        hist_grouped = pd.DataFrame(columns=['NameClean', camp_col, 'Ποσό_Net'])
-        
-    # === ΙΣΤΟΡΙΚΟΤΗΤΑ ΑΠΟΚΛΕΙΣΤΙΚΑ ΑΠΟ ΤΟ ΦΥΛΛΟ1 ===
-    # ΚΡΙΣΙΜΗ ΑΛΛΑΓΗ: το ιστορικό ΔΕΝ χτίζεται πλέον κάνοντας loop πάνω στα ονόματα
-    # του Φύλλο4 (μέλη) και ψάχνοντας ταίριασμα στο Φύλλο1. Αντίθετα, κάνουμε loop
-    # ΑΠΕΥΘΕΙΑΣ πάνω σε ό,τι όνομα υπάρχει ήδη στο Φύλλο1 (hist_grouped) — δηλαδή
-    # οτιδήποτε έχει πραγματική καταγεγραμμένη παραγγελία στο ιστορικό, ανεξάρτητα
-    # από το αν/πώς εμφανίζεται στο Φύλλο4. Το Φύλλο4 αγνοείται εντελώς εδώ.
-    # Αυτό λύνει οριστικά προβλήματα σαν το "ΑΓΑΠΗ ΧΑΤΖΗΔΗΜΗΤΡΙΑΔΟΥ" (διαφορετική
-    # γραφή ονόματος ανάμεσα στα δύο φύλλα), αφού η τρέχουσα καμπάνια (names_with_any_order)
-    # προέρχεται ΚΙ ΑΥΤΗ από το Φύλλο1 — άρα τα ονόματα πλέον ταιριάζουν πάντα μεταξύ τους.
-    all_hist_names = hist_grouped['NameClean'].unique().tolist() if not hist_grouped.empty else []
+
+    # === CACHED: history_detailed (ανά μέλος, ανά ιστορική καμπάνια) ===
+    # Δεύτερο πιο ακριβό κομμάτι μετά το campaign_stats — group-by πάνω σε ΟΛΟ
+    # το ιστορικό sales sheet. Ίδια λογική caching: εξαρτάται μόνο από τα
+    # δεδομένα, όχι από session state, οπότε είναι ασφαλές να παγώνει για 5'.
+    history_detailed, sheet4_history, all_historical_nets, global_avg_basket = \
+        compute_history_detailed(df_sales_all, camp_col, status_col_global, historical_camps)
     fuzzy_name_matches = {}  # διατηρείται κενό/αχρησιμοποίητο· υπάρχει μόνο για συμβατότητα με το Data Health Check
-
-    for name in all_hist_names:
-        entries = []
-        member_hist = hist_grouped[hist_grouped['NameClean'] == name]
-
-        for pidx, camp in enumerate(historical_camps):
-            camp_data = member_hist[member_hist[camp_col] == camp]
-            if not camp_data.empty:
-                net_val = camp_data['Ποσό_Net'].iloc[0]
-                entries.append({'period_idx': pidx, 'net_value': net_val})
-
-        if entries:
-            history_detailed[name] = entries
-            avg_net = sum(e['net_value'] for e in entries) / len(entries)
-            sheet4_history[name] = avg_net
-            all_historical_nets.append(avg_net)
-
-    if all_historical_nets:
-        valid_nets = [n for n in all_historical_nets if n > 15]
-        global_avg_basket = sum(valid_nets) / len(valid_nets) if valid_nets else 65.0
-    else:
-        global_avg_basket = 65.0
 
     num_hist_camps = len(historical_camps) if historical_camps else 1
     
