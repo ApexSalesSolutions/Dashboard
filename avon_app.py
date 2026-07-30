@@ -30,6 +30,10 @@ except ImportError:
 # ==========================================
 st.set_page_config(page_title="Avon Strategic AI v800 (Machine Learning Edition)", layout="wide")
 
+# Πρόωρος έλεγχος λειτουργίας βοηθού — χρειάζεται εδώ, πριν καν το κύριο CSS,
+# ειδικά για να βάλει λευκά γράμματα στο sidebar της βοηθού.
+_url_assistant_mode = st.query_params.get("view", "") == "assistant"
+
 st.markdown("""
     <style>
     .stApp { background-color: #0b0f19; color: #e2e8f0; }
@@ -110,6 +114,15 @@ st.markdown("""
     }
     @keyframes shine { to { background-position: 200% center; } }
     </style>
+    """, unsafe_allow_html=True)
+
+if _url_assistant_mode:
+    # === Λευκά γράμματα στο sidebar — ΜΟΝΟ σε λειτουργία βοηθού ===
+    st.markdown("""
+        <style>
+        [data-testid="stSidebar"] * { color: #ffffff !important; }
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #f0f0f0 !important; }
+        </style>
     """, unsafe_allow_html=True)
 
 if 'sent_ids' not in st.session_state:
@@ -776,7 +789,9 @@ try:
     # πλήρες is_assistant_mode (που εξαρτάται από το selected_camp το οποίο
     # δεν έχει οριστεί ακόμα σε αυτό το σημείο), ειδικά για να κρύβει τα
     # στοιχεία upload από τη βοηθό — δεν τα χρειάζεται, μόνο μπερδεύουν.
-    _is_assistant_early = st.query_params.get("view", "") == "assistant"
+    # (Ίδια τιμή με το _url_assistant_mode που ορίστηκε ήδη στην κορυφή του
+    # αρχείου για το CSS — απλά επαναχρησιμοποιείται εδώ με τοπικό όνομα.)
+    _is_assistant_early = _url_assistant_mode
 
     if not _is_assistant_early:
         st.sidebar.markdown("### 📤 Γρήγορη Ενημέρωση (προαιρετικό)")
@@ -952,22 +967,71 @@ try:
             st.rerun()
 
 
+    def map_not_placed_to_schema(df_raw):
+        """
+        Ίδια λογική με το map_all_orders_to_schema — το raw NOT_PLACED_AN_ORDER
+        export της Avon έχει το όνομα στη στήλη 'Στοιχεία Μέλους' και ΔΥΟ στήλες
+        τηλεφώνου ('Κινητό...' και 'Πρωϊνό...') — χωρίς ρητή προτεραιότητα στο
+        'Κινητό', η γενική αναζήτηση έπιανε λάθος στήλη (Πρωινό).
+        """
+        df_raw = df_raw.copy()
+        df_raw.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_raw.columns]
+
+        def find_col(*keywords):
+            for kw in keywords:
+                for c in df_raw.columns:
+                    if kw in remove_accents(str(c)).upper():
+                        return c
+            return None
+
+        col_name  = find_col('ΣΤΟΙΧΕΙΑ ΜΕΛΟΥΣ', 'ΟΝΟΜΑ', 'NAME')
+        col_phone = find_col('ΚΙΝΗΤΟ', 'ΤΗΛ', 'PHONE')
+
+        if not col_name:
+            return None, "Δεν βρέθηκε στήλη ονόματος (αναμενόταν 'Στοιχεία Μέλους')."
+
+        out = pd.DataFrame()
+        out['Ονοματεπώνυμο'] = df_raw[col_name]
+        out['Τηλέφωνο'] = df_raw[col_phone] if col_phone else None
+        return out, None
+
+    NOT_PLACED_CACHE = "not_placed_cache.csv"
+
+    def load_cached_not_placed():
+        if os.path.exists(NOT_PLACED_CACHE):
+            try:
+                return pd.read_csv(NOT_PLACED_CACHE)
+            except Exception:
+                return None
+        return None
+
+    def save_cached_not_placed(df):
+        try:
+            df.to_csv(NOT_PLACED_CACHE, index=False)
+        except Exception:
+            pass
+
+    # Αυτόματη εφαρμογή προηγούμενου (cached) NOT_PLACED upload — ίδια λογική
+    # με το ALL_ORDERS: ΜΟΝΙΜΟ, εφαρμόζεται σε ΚΑΘΕ άνοιγμα (και της βοηθού),
+    # όχι μόνο στη δική σου τρέχουσα συνεδρία.
+    _cached_np = load_cached_not_placed()
+    if _cached_np is not None and not _cached_np.empty and up_not_placed is None:
+        df_todo_raw = clean_duplicate_columns(_cached_np)
+        if not _is_assistant_early:
+            st.sidebar.caption("💾 Χρησιμοποιείται αποθηκευμένο NOT_PLACED. Ανέβασε νέο για ενημέρωση.")
+
     if up_not_placed is not None:
         df_uploaded_notplaced = read_avon_export_file(up_not_placed)
         if df_uploaded_notplaced is not None and not df_uploaded_notplaced.empty:
-            df_uploaded_notplaced.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_uploaded_notplaced.columns]
-            camp_col_np = next((c for c in df_uploaded_notplaced.columns
-                                 if 'ΚΑΜΠΑΝΙΑ' in remove_accents(str(c)).upper() or 'CAMPAIGN' in remove_accents(str(c)).upper()), None)
-            if camp_col_np:
-                # Αυτόματο φιλτράρισμα στην πιο πρόσφατη (τρέχουσα) καμπάνια —
-                # αντικαθιστά το χειροκίνητο φίλτρο που έκανες μέχρι τώρα στο Excel.
-                latest_camp = sorted(df_uploaded_notplaced[camp_col_np].dropna().unique(), reverse=True)[0]
-                df_uploaded_notplaced = df_uploaded_notplaced[df_uploaded_notplaced[camp_col_np] == latest_camp].copy()
-                st.sidebar.caption(f"ℹ️ Αυτόματο φίλτρο καμπάνιας: {latest_camp}")
-            df_todo_raw = df_uploaded_notplaced
-            st.sidebar.success(f"✅ NOT_PLACED: {len(df_uploaded_notplaced)} γραμμές ενημερώθηκαν")
+            df_mapped_np, err_np = map_not_placed_to_schema(df_uploaded_notplaced)
+            if err_np:
+                st.sidebar.error(f"⚠️ {err_np}")
+            else:
+                df_todo_raw = clean_duplicate_columns(df_mapped_np)
+                save_cached_not_placed(df_mapped_np)  # ΜΟΝΙΜΗ αποθήκευση — βλέπει και η βοηθός
+                st.sidebar.success(f"✅ NOT_PLACED: {len(df_mapped_np)} γραμμές φορτώθηκαν")
         else:
-            st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση του NOT_PLACED — δοκίμασε `pip install xlrd` στον server, ή έλεγξε τη μορφή αρχείου.")
+            st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση του NOT_PLACED — έλεγξε τη μορφή αρχείου.")
 
     st.sidebar.markdown("---")
 
@@ -1138,6 +1202,7 @@ try:
         ξανά κάποιο σημείο αποθήκευσης."""
         st.session_state.sent_ids.add(row_key)
         save_contacted_today(st.session_state.sent_ids)
+        st.toast("✅ Ολοκληρώθηκε!", icon="✅")
 
     # Φόρτωση μία φορά ανά session (merge με ό,τι ήδη τσεκαρίστηκε σήμερα)
     if '_contacted_loaded_for' not in st.session_state or st.session_state._contacted_loaded_for != _contacted_key:
@@ -2377,7 +2442,7 @@ try:
     # 5. UI RENDER
     # ==========================================
 
-    st.title(f"🛡️ Strategic AI Command Center - {selected_camp}")
+    st.title(f"🛡️ Πίνακας Ελέγχου Καμπάνιας - {selected_camp}")
 
     if is_assistant_mode:
         _greet_name = f" {assistant_name}" if assistant_name else ""
@@ -3101,11 +3166,16 @@ try:
                     if note_text:
                         st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
                     if show_notes:
-                        new_note = st.text_input("Σημείωση:", value=note_text,
-                                                  key=f"note_{row_key}", placeholder="π.χ. θα παραγγείλει αύριο...")
-                        if new_note != note_text:
+                        with st.form(key=f"note_form_{row_key}", clear_on_submit=False, border=False):
+                            fc1, fc2 = st.columns([5, 1])
+                            new_note = fc1.text_input("Σημείωση:", value=note_text,
+                                                      key=f"note_{row_key}", placeholder="π.χ. θα παραγγείλει αύριο...",
+                                                      label_visibility="collapsed")
+                            submitted = fc2.form_submit_button("💾")
+                        if submitted and new_note != note_text:
                             save_note(n, new_note)
                             member_notes[n] = new_note
+                            st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
                             st.rerun()
                 with mc2:
                     if st.button("✓ Ok", key=f"btn_{row_key}"):
@@ -3306,11 +3376,16 @@ try:
                             )
                         if note_text:
                             st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
-                        new_note = st.text_input("Σημείωση:", value=note_text,
-                                                  key=f"note_gpr_{n}", placeholder="π.χ. δεν θέλει πια, μετακόμισε...")
-                        if new_note != note_text:
+                        with st.form(key=f"note_form_gpr_{n}", clear_on_submit=False, border=False):
+                            gfc1, gfc2 = st.columns([5, 1])
+                            new_note = gfc1.text_input("Σημείωση:", value=note_text,
+                                                      key=f"note_gpr_{n}", placeholder="π.χ. δεν θέλει πια, μετακόμισε...",
+                                                      label_visibility="collapsed")
+                            gp_submitted = gfc2.form_submit_button("💾")
+                        if gp_submitted and new_note != note_text:
                             save_note(n, new_note)
                             member_notes[n] = new_note
+                            st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
                             st.rerun()
                     with gc2:
                         row_key = f"gpr_{n}"
@@ -3471,11 +3546,16 @@ try:
                             st.info("Το ιστορικό σου ξεκινάει αργότερα από την τελευταία γνωστή παραγγελία αυτού του μέλους — πιθανότατα απουσίαζε για ακόμα περισσότερο καιρό από ό,τι δείχνει ο αριθμός.")
                         if note_text:
                             st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
-                        new_note = st.text_input("Σημείωση:", value=note_text,
-                                                  key=f"note_wb_{n}", placeholder="π.χ. τι την έκανε να επιστρέψει...")
-                        if new_note != note_text:
+                        with st.form(key=f"note_form_wb_{n}", clear_on_submit=False, border=False):
+                            wfc1, wfc2 = st.columns([5, 1])
+                            new_note = wfc1.text_input("Σημείωση:", value=note_text,
+                                                      key=f"note_wb_{n}", placeholder="π.χ. τι την έκανε να επιστρέψει...",
+                                                      label_visibility="collapsed")
+                            wb_submitted = wfc2.form_submit_button("💾")
+                        if wb_submitted and new_note != note_text:
                             save_note(n, new_note)
                             member_notes[n] = new_note
+                            st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
                             st.rerun()
 
     with tabs[tab_idx['today']]:
