@@ -994,9 +994,13 @@ try:
     status_col_global = next((c for c in df_sales_all.columns if 'ΚΑΤΑΣΤΑΣΗ' in remove_accents(str(c)).upper() or 'STATUS' in remove_accents(str(c)).upper()), 'Κατάσταση')
 
     # --- SIDEBAR ---
-    st.sidebar.header("🚀 Διαχείριση")
     available_camps = sorted(df_sales_all[camp_col].unique(), reverse=True)
-    selected_camp = st.sidebar.selectbox("Ενεργή Καμπάνια", available_camps)
+    if _is_assistant_early:
+        # Καμία διαχείριση στη βοηθό — αυτόματα η πιο πρόσφατη (τρέχουσα) καμπάνια
+        selected_camp = available_camps[0]
+    else:
+        st.sidebar.header("🚀 Διαχείριση")
+        selected_camp = st.sidebar.selectbox("Ενεργή Καμπάνια", available_camps)
 
     # === ΛΕΙΤΟΥΡΓΙΑ ΒΟΗΘΟΥ (ορίζεται νωρίς ώστε να κρύβει ΚΑΙ τα στοιχεία του
     # sidebar — στόχους, ποσά, calibration — όχι μόνο το κυρίως περιεχόμενο) ===
@@ -1043,6 +1047,7 @@ try:
     # Αποθηκεύεται μόνιμα, ρυθμίζεται ΜΟΝΟ από σένα (κρυμμένο σε λειτουργία
     # βοηθού) — η βοηθός απλά βλέπει το αποτέλεσμα, δεν μπορεί να το αλλάξει.
     assistant_name = all_goals.get("_assistant_name", "")
+    owner_message = all_goals.get("_owner_message", "")
     if not is_assistant_mode:
         st.sidebar.markdown("---")
         new_assistant_name = st.sidebar.text_input(
@@ -1054,6 +1059,33 @@ try:
             all_goals["_assistant_name"] = new_assistant_name
             save_goals(all_goals)
             assistant_name = new_assistant_name
+
+        # === ΜΗΝΥΜΑ ΠΡΟΣ ΤΗ ΒΟΗΘΟ ===
+        # Το μόνο σημείο στη Λειτουργία Βοηθού όπου ΕΣΥ αποφασίζεις τι θα δει —
+        # π.χ. "Κάλεσε πρώτα τη Μαρία σήμερα" ή "Ξεκίνα από τις Διαγραφές".
+        # Εμφανίζεται σαν ειδοποίηση στην κορυφή της δικής της προβολής.
+        new_owner_message = st.sidebar.text_area(
+            "💬 Μήνυμα προς τη Βοηθό", value=owner_message,
+            placeholder="π.χ. Ξεκίνα σήμερα από τις Διαγραφές — έχουν προτεραιότητα.",
+            help="Θα εμφανίζεται σαν ειδοποίηση στην κορυφή της προβολής της βοηθού. Άδειασέ το για να μην εμφανίζεται τίποτα."
+        )
+        if new_owner_message != owner_message:
+            all_goals["_owner_message"] = new_owner_message
+            save_goals(all_goals)
+            owner_message = new_owner_message
+    else:
+        # === Λειτουργία Βοηθού: το sidebar δείχνει ΜΟΝΟ μηνύματα — από σένα
+        # (owner_message) ή από το σύστημα (π.χ. τα Smart Alerts αργότερα) —
+        # καμία διαχείριση/ρύθμιση δεν εμφανίζεται εδώ.
+        if owner_message.strip():
+            st.sidebar.markdown(
+                f"<div style='padding:12px 14px;border-radius:10px;"
+                f"background:rgba(255,105,180,0.12);border:1px solid rgba(255,105,180,0.35);margin-bottom:10px;'>"
+                f"<span style='font-size:12px;color:#ff69b4;font-weight:700;'>💬 ΜΗΝΥΜΑ</span><br>"
+                f"<span style='font-size:13px;color:#fff;'>{owner_message}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
 
     # === ΔΥΝΑΜΙΚΟΣ ΧΑΙΡΕΤΙΣΜΟΣ ΩΡΑΣ ===
     def get_time_greeting():
@@ -1199,8 +1231,9 @@ try:
 
     end_date = auto_end
     st.sidebar.caption(f"📅 Λήξη Καμπάνιας: **{end_date.strftime('%d/%m/%Y')}** (αυτόματο — τελευταία μέρα μήνα, Σάββατο αν πέφτει Κυριακή)")
-    with st.sidebar.expander("✏️ Χειροκίνητη διόρθωση ημερομηνίας (σπάνια χρήσιμο)", expanded=False):
-        end_date = st.date_input("Λήξη Καμπάνιας", value=auto_end, key="manual_end_override")
+    if not is_assistant_mode:
+        with st.sidebar.expander("✏️ Χειροκίνητη διόρθωση ημερομηνίας (σπάνια χρήσιμο)", expanded=False):
+            end_date = st.date_input("Λήξη Καμπάνιας", value=auto_end, key="manual_end_override")
 
     campaign_start = date(end_date.year, end_date.month, 1)
     campaign_duration_est = max(1, (end_date - campaign_start).days + 1)
@@ -1473,10 +1506,11 @@ try:
     # ML Training
     xgb_model = train_propensity_model(history_detailed, num_hist_camps)
 
-    if st.sidebar.button("🔄 Reset Tik (Ok)"):
-        st.session_state.sent_ids = set()
-        save_contacted_today(set())  # καθαρισμός ΚΑΙ της μόνιμης αποθήκευσης
-        st.rerun()
+    if not is_assistant_mode:
+        if st.sidebar.button("🔄 Reset Tik (Ok)"):
+            st.session_state.sent_ids = set()
+            save_contacted_today(set())  # καθαρισμός ΚΑΙ της μόνιμης αποθήκευσης
+            st.rerun()
 
     # ==========================================
     # --- PROCESSING ---
@@ -1568,19 +1602,20 @@ try:
     else:
         st.sidebar.caption("💡 `pip install streamlit-autorefresh` για auto-refresh")
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📄 Εξαγωγή Λίστας")
-    if FPDF is None:
-        st.sidebar.warning("⚠️ Για εξαγωγή PDF εγκαταστήστε το fpdf2: `pip install fpdf2`")
-    else:
-        pdf_bytes = create_pdf_bytes(df_no_order, phone_col_main)
-        if pdf_bytes:
-            st.sidebar.download_button(
-                label="📥 Κατέβασμα PDF (Χωρίς Παραγγελία)",
-                data=pdf_bytes,
-                file_name=f"No_Orders_List_{selected_camp}.pdf",
-                mime="application/pdf"
-            )
+    if not is_assistant_mode:
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📄 Εξαγωγή Λίστας")
+        if FPDF is None:
+            st.sidebar.warning("⚠️ Για εξαγωγή PDF εγκαταστήστε το fpdf2: `pip install fpdf2`")
+        else:
+            pdf_bytes = create_pdf_bytes(df_no_order, phone_col_main)
+            if pdf_bytes:
+                st.sidebar.download_button(
+                    label="📥 Κατέβασμα PDF (Χωρίς Παραγγελία)",
+                    data=pdf_bytes,
+                    file_name=f"No_Orders_List_{selected_camp}.pdf",
+                    mime="application/pdf"
+                )
 
     # Feature 8: Excel export με όλα τα sheets
     def build_excel_export():
@@ -1616,16 +1651,17 @@ try:
                     .to_excel(writer, sheet_name='Προβλέψεις', index=False)
         return output.getvalue()
 
-    try:
-        xl_bytes = build_excel_export()
-        st.sidebar.download_button(
-            label="📊 Κατέβασμα Excel (Πλήρης Αναφορά)",
-            data=xl_bytes,
-            file_name=f"Avon_Report_{selected_camp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    except Exception:
-        pass
+    if not is_assistant_mode:
+        try:
+            xl_bytes = build_excel_export()
+            st.sidebar.download_button(
+                label="📊 Κατέβασμα Excel (Πλήρης Αναφορά)",
+                data=xl_bytes,
+                file_name=f"Avon_Report_{selected_camp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception:
+            pass
 
     # =========================================================
     # 4. DATA-DRIVEN FORECAST (v600)
