@@ -1345,6 +1345,7 @@ try:
     # τσεκαρισμένο" παραμένει τσεκαρισμένο όλη μέρα, αλλά αύριο η λίστα
     # ξεκινάει καθαρή (λογικό, αφού μπορεί να τους ξανακαλέσει σε νέα καμπάνια).
     _contacted_key = f"_contacted_{camp_key_str}_{date.today().isoformat()}"
+    _outcomes_key = f"_call_outcomes_{camp_key_str}_{date.today().isoformat()}"
 
     def load_contacted_today():
         goals = load_goals()
@@ -1355,13 +1356,29 @@ try:
         goals[_contacted_key] = list(ids_set)
         save_goals(goals)
 
-    def mark_contacted(row_key):
+    def load_call_outcomes():
+        goals = load_goals()
+        return goals.get(_outcomes_key, {})
+
+    def save_call_outcome(row_key, outcome, display_name=""):
+        goals = load_goals()
+        outcomes = goals.get(_outcomes_key, {})
+        outcomes[row_key] = {"name": display_name, "outcome": outcome, "time": datetime.now().strftime("%H:%M")}
+        goals[_outcomes_key] = outcomes
+        save_goals(goals)
+
+    CALL_OUTCOMES = ["✅ Παρήγγειλε", "📅 Θα παραγγείλει", "❌ Αρνήθηκε", "📵 Δεν απάντησε", "☎️ Λάθος τηλέφωνο"]
+
+    def mark_contacted(row_key, outcome=None, display_name=""):
         """Τσεκάρει ΚΑΙ αποθηκεύει μόνιμα — χρησιμοποιείται παντού αντί για
         απευθείας st.session_state.sent_ids.add(), ώστε να μην ξεχνιέται ποτέ
-        ξανά κάποιο σημείο αποθήκευσης."""
+        ξανά κάποιο σημείο αποθήκευσης. Αν δοθεί outcome, αποθηκεύεται και το
+        συγκεκριμένο αποτέλεσμα της κλήσης (όχι μόνο ότι "έγινε κάτι")."""
         st.session_state.sent_ids.add(row_key)
         save_contacted_today(st.session_state.sent_ids)
-        st.toast("✅ Ολοκληρώθηκε!", icon="✅")
+        if outcome:
+            save_call_outcome(row_key, outcome, display_name)
+        st.toast(f"{outcome or '✅ Ολοκληρώθηκε!'}", icon="✅")
 
     # Φόρτωση μία φορά ανά session (merge με ό,τι ήδη τσεκαρίστηκε σήμερα)
     if '_contacted_loaded_for' not in st.session_state or st.session_state._contacted_loaded_for != _contacted_key:
@@ -3233,8 +3250,12 @@ try:
                             st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
                             st.rerun()
                 with mc2:
-                    if st.button("✓ Ok", key=f"btn_{row_key}"):
-                        mark_contacted(row_key)
+                    outcome_sel = st.selectbox(
+                        "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                        key=f"outcome_{row_key}", label_visibility="collapsed"
+                    )
+                    if outcome_sel != "— Επίλεξε —":
+                        mark_contacted(row_key, outcome=outcome_sel, display_name=r['Ονοματεπώνυμο'])
                         st.rerun()
 
     if 'ai_advisor' in tab_idx:
@@ -3444,8 +3465,12 @@ try:
                             st.rerun()
                     with gc2:
                         row_key = f"gpr_{n}"
-                        if st.button("✓ Ok", key=f"btn_{row_key}"):
-                            mark_contacted(row_key)
+                        outcome_sel_gpr = st.selectbox(
+                            "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                            key=f"outcome_{row_key}", label_visibility="collapsed"
+                        )
+                        if outcome_sel_gpr != "— Επίλεξε —":
+                            mark_contacted(row_key, outcome=outcome_sel_gpr, display_name=row['Ονοματεπώνυμο'])
                             st.rerun()
 
     if 'additions' in tab_idx:
@@ -3619,6 +3644,22 @@ try:
             "Διαγραφές υψηλής πιθανότητας, και σιωπηλά VIP — ταξινομημένα με ένα κοινό score."
         )
 
+        # === ΣΥΝΟΨΗ ΑΠΟΤΕΛΕΣΜΑΤΩΝ ΚΛΗΣΕΩΝ ΣΗΜΕΡΑ ===
+        _today_outcomes = load_call_outcomes()
+        if _today_outcomes:
+            _outcome_counts = {}
+            for _v in _today_outcomes.values():
+                _oc = _v.get("outcome", "")
+                _outcome_counts[_oc] = _outcome_counts.get(_oc, 0) + 1
+            st.markdown("**📊 Αποτελέσματα κλήσεων σήμερα:**")
+            _oc_cols = st.columns(len(_outcome_counts))
+            for _idx, (_oc, _cnt) in enumerate(_outcome_counts.items()):
+                _oc_cols[_idx].metric(_oc, _cnt)
+            with st.expander("🔍 Λεπτομέρειες ανά επαφή", expanded=False):
+                for _rk, _v in sorted(_today_outcomes.items(), key=lambda x: x[1].get("time", "")):
+                    st.caption(f"{_v.get('time','')} — **{_v.get('name','')}** — {_v.get('outcome','')}")
+            st.divider()
+
         action_rows = []
         # Πηγή 1: Smart Rank top δυναμικά μέλη (όσα δεν έχουν παραγγείλει ακόμα)
         for _, r in df_potentials.head(120).iterrows():
@@ -3680,8 +3721,12 @@ try:
                 else:
                     c1.caption(f"📞 {phone_display}")
                 c1.caption(f"{row['Λεπτομέρεια']}{' | 📝 ' + note_text if note_text else ''}")
-                if c2.button("✓ Ok", key=f"btn_{row_key}"):
-                    mark_contacted(row_key)
+                outcome_sel_today = c2.selectbox(
+                    "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                    key=f"outcome_{row_key}", label_visibility="collapsed"
+                )
+                if outcome_sel_today != "— Επίλεξε —":
+                    mark_contacted(row_key, outcome=outcome_sel_today, display_name=row['Ονοματεπώνυμο'])
                     st.rerun()
                 st.divider()
 
