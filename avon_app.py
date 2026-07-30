@@ -755,8 +755,15 @@ try:
     # Google Sheet. Ανεβάζεις τα ίδια αρχεία που κατεβάζεις από το
     # report της Avon, και το app κάνει μόνο του το parsing.
     # =========================================================
-    st.sidebar.markdown("### 📤 Γρήγορη Ενημέρωση (προαιρετικό)")
-    st.sidebar.caption("Ανέβασε τα raw αρχεία από το Avon report — χωρίς μετατροπή δεκαδικού ή αντιγραφή στο Google Sheet.")
+    # Πρόωρος έλεγχος λειτουργίας βοηθού — χρειάζεται εδώ, ΠΡΙΝ οριστεί το
+    # πλήρες is_assistant_mode (που εξαρτάται από το selected_camp το οποίο
+    # δεν έχει οριστεί ακόμα σε αυτό το σημείο), ειδικά για να κρύβει τα
+    # στοιχεία upload από τη βοηθό — δεν τα χρειάζεται, μόνο μπερδεύουν.
+    _is_assistant_early = st.query_params.get("view", "") == "assistant"
+
+    if not _is_assistant_early:
+        st.sidebar.markdown("### 📤 Γρήγορη Ενημέρωση (προαιρετικό)")
+        st.sidebar.caption("Ανέβασε τα raw αρχεία από το Avon report — χωρίς μετατροπή δεκαδικού ή αντιγραφή στο Google Sheet.")
 
     def read_avon_export_file(uploaded_file):
         """
@@ -839,8 +846,12 @@ try:
 
         return out, None
 
-    up_all_orders = st.sidebar.file_uploader("📦 ALL_ORDERS (→ Φύλλο1)", type=['xls', 'xlsx'], key="up_all_orders")
-    up_not_placed = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER (→ Φύλλο2)", type=['xls', 'xlsx'], key="up_not_placed")
+    if _is_assistant_early:
+        up_all_orders = None
+        up_not_placed = None
+    else:
+        up_all_orders = st.sidebar.file_uploader("📦 ALL_ORDERS (→ Φύλλο1)", type=['xls', 'xlsx'], key="up_all_orders")
+        up_not_placed = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER (→ Φύλλο2)", type=['xls', 'xlsx'], key="up_not_placed")
 
     # === ΜΟΝΙΜΗ ΑΠΟΘΗΚΕΥΣΗ ΑΝΕΒΑΣΜΕΝΩΝ ΔΕΔΟΜΕΝΩΝ ===
     # ΚΡΙΣΙΜΟ: το st.file_uploader είναι ΠΡΟΣΩΡΙΝΟ — υπάρχει μόνο όσο είναι
@@ -887,7 +898,8 @@ try:
         try:
             _cached_camp = int(_cached_df['Καμπάνια'].iloc[0])
             df_sales_all = merge_cached_or_uploaded(df_sales_all, _cached_df, _cached_camp)
-            st.sidebar.caption(f"💾 Χρησιμοποιείται αποθηκευμένο ALL_ORDERS (καμπάνια {_cached_camp}). Ανέβασε νέο για ενημέρωση.")
+            if not _is_assistant_early:
+                st.sidebar.caption(f"💾 Χρησιμοποιείται αποθηκευμένο ALL_ORDERS (καμπάνια {_cached_camp}). Ανέβασε νέο για ενημέρωση.")
         except Exception:
             pass
 
@@ -913,7 +925,7 @@ try:
         else:
             st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση του ALL_ORDERS — έλεγξε τη μορφή αρχείου.")
 
-    if os.path.exists(UPLOADED_ORDERS_CACHE):
+    if not _is_assistant_early and os.path.exists(UPLOADED_ORDERS_CACHE):
         if st.sidebar.button("🗑️ Καθαρισμός αποθηκευμένου upload", key="clear_upload_cache",
                               help="Επιστροφή στα δεδομένα του Google Sheet, αγνοώντας το τελευταίο ανεβασμένο αρχείο."):
             try:
