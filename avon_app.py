@@ -1391,6 +1391,7 @@ try:
         goal_actives = int(saved.get("actives", 0))
         goal_removals = int(saved.get("removals", 0))
         goal_stencil_growth = int(saved.get("stencil_growth", 0))
+        campaign_debt = float(saved.get("debt", 0.0))
     else:
         st.sidebar.markdown("---")
         st.sidebar.subheader("🎯 Στόχοι Καμπάνιας")
@@ -1407,9 +1408,15 @@ try:
             value=int(saved.get("stencil_growth", 0)),
             help="Stencil Growth = Additions − Διαγραφές. Καθαρή ανάπτυξη ομάδας αυτή την καμπάνια. Ορατό μόνο σε σένα."
         )
+        campaign_debt = st.sidebar.number_input(
+            "💳 Χρέος Καμπάνιας (€)", min_value=0.0, step=10.0,
+            value=float(saved.get("debt", 0.0)),
+            help="Αφαιρείται από το σύνολο των τελικών πωλήσεων πριν τον υπολογισμό της προμήθειας. Ορατό μόνο σε σένα."
+        )
 
         # Αποθήκευση αν άλλαξε κάτι
-        new_saved = {"sales": goal_sales, "actives": goal_actives, "removals": goal_removals, "stencil_growth": goal_stencil_growth}
+        new_saved = {"sales": goal_sales, "actives": goal_actives, "removals": goal_removals,
+                     "stencil_growth": goal_stencil_growth, "debt": campaign_debt}
         if new_saved != saved:
             all_goals[camp_key_str] = new_saved
             save_goals(all_goals)
@@ -3189,6 +3196,60 @@ try:
             f"</div>",
             unsafe_allow_html=True
         )
+
+        # === ΕΚΤΙΜΗΣΗ ΠΡΟΜΗΘΕΙΑΣ (μόνο για σένα) ===
+        # 1. Καθαρές πωλήσεις = τελικές πωλήσεις − χρέος καμπάνιας
+        # 2. % επίτευξης πλάνου πωλήσεων βάσει των ΚΑΘΑΡΩΝ πωλήσεων (μετά χρέους)
+        # 3. Ποιος πίνακας προμήθειας χρησιμοποιείται: Πίνακας 1 αν πιάστηκε ο
+        #    στόχος Stencil Growth, αλλιώς Πίνακας 2 (χαμηλότερα ποσοστά)
+        # 4. +300€ μπόνους αν πιάστηκε ο στόχος Ενεργών Μελών
+        # 5. +24% ΦΠΑ στο τελικό άθροισμα (προμήθεια + μπόνους)
+        def get_commission_pct(pct, stencil_ok):
+            if stencil_ok:  # Πίνακας 1
+                if pct >= 105: return 0.065
+                elif pct >= 100: return 0.055
+                elif pct >= 95: return 0.045
+                else: return 0.035
+            else:  # Πίνακας 2
+                if pct >= 105: return 0.05
+                elif pct >= 100: return 0.045
+                elif pct >= 95: return 0.04
+                else: return 0.035
+
+        net_sales_after_debt = max(0.0, total_billed_net - campaign_debt)
+        achievement_pct_debt = (net_sales_after_debt / goal_sales * 100) if goal_sales > 0 else 0.0
+        stencil_achieved = stencil_growth_now >= goal_stencil_growth
+        commission_pct = get_commission_pct(achievement_pct_debt, stencil_achieved)
+        commission_base = net_sales_after_debt * commission_pct
+        actives_achieved = goal_actives > 0 and unique_orders_count >= goal_actives
+        actives_bonus = 300.0 if actives_achieved else 0.0
+        commission_pre_vat = commission_base + actives_bonus
+        commission_final = commission_pre_vat * 1.24
+        table_label = "Πίνακας 1 ✅ (πιάστηκε το Stencil Growth)" if stencil_achieved else "Πίνακας 2 (δεν πιάστηκε το Stencil Growth)"
+
+        with st.expander("💼 Εκτίμηση Προμήθειας", expanded=False):
+            pc1, pc2 = st.columns(2)
+            pc1.metric("💰 Τελικές Πωλήσεις", f"{total_billed_net:,.0f} €")
+            pc2.metric("💳 Χρέος Καμπάνιας", f"-{campaign_debt:,.0f} €")
+            st.metric("🧮 Καθαρές Πωλήσεις (μετά χρέους)", f"{net_sales_after_debt:,.0f} €",
+                      delta=f"{achievement_pct_debt:.1f}% του πλάνου")
+            st.caption(f"📋 Χρησιμοποιείται ο **{table_label}**")
+            pc3, pc4 = st.columns(2)
+            pc3.metric("📊 Ποσοστό Προμήθειας", f"{commission_pct:.1%}")
+            pc4.metric("💵 Βασική Προμήθεια", f"{commission_base:,.0f} €")
+            if actives_achieved:
+                st.success(f"✅ Στόχος Ενεργών Μελών επιτεύχθηκε — μπόνους +300€")
+            st.markdown(
+                f"<div style='padding:12px 16px;border-radius:8px;background:rgba(40,167,69,0.12);"
+                f"border:1px solid rgba(40,167,69,0.4);margin-top:10px;'>"
+                f"<span style='font-size:13px;color:#888;'>ΤΕΛΙΚΗ ΠΡΟΜΗΘΕΙΑ (με ΦΠΑ 24%)</span><br>"
+                f"<span style='font-size:24px;font-weight:bold;color:#28a745;'>{commission_final:,.2f} €</span>"
+                f"<br><span style='font-size:11px;color:#888;'>({commission_base:,.0f}€ βασική + {actives_bonus:,.0f}€ μπόνους) × 1,24 ΦΠΑ</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            if not is_closed:
+                st.caption("ℹ️ Υπολογισμένο με τις **τρέχουσες** πωλήσεις — θα οριστικοποιηθεί στο κλείσιμο της καμπάνιας.")
 
     # === Δυναμική λίστα tabs — στη Λειτουργία Βοηθού, τα μη-διαθέσιμα tabs
     # (AI Advisor, Προς Τιμολόγηση, Τιμολογημένες, Additions, Adjustments) ΔΕΝ
