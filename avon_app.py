@@ -3868,6 +3868,15 @@ try:
                 st.info("🙋 Μη διαθέσιμο σε λειτουργία βοηθού (οικονομικά στοιχεία).")
             elif not df_pros_timologisi.empty:
                 df_disp = df_pros_timologisi.copy()
+                # ΚΡΙΣΙΜΟ: αν ένα άτομο έχει πολλαπλές γραμμές (π.χ. 2 ξεχωριστές
+                # παραγγελίες), ομαδοποιούμε ΠΡΩΤΑ ανά NameClean — αλλιώς
+                # δημιουργούνται δύο κάρτες με το ΙΔΙΟ key και το Streamlit σκάει.
+                if df_disp['NameClean'].duplicated().any():
+                    df_disp = df_disp.groupby('NameClean', as_index=False).agg({
+                        'Ονοματεπώνυμο': 'first',
+                        'Ποσό_Net': 'sum',
+                        'Τηλέφωνο': 'first',
+                    })
                 df_disp['Εκτίμηση'] = df_disp.apply(lambda r: r['Ποσό_Net'] if r['Ποσό_Net'] > 0 else get_smart_value(r['NameClean'], r['Ονοματεπώνυμο']), axis=1)
                 pt_search = st.text_input("🔍 Αναζήτηση", key="search_pt", placeholder="Πληκτρολόγησε όνομα...")
                 if pt_search:
@@ -4433,6 +4442,17 @@ try:
             df_cc_disp = df_empty_status
             if cc_search:
                 df_cc_disp = df_cc_disp[df_cc_disp['Ονοματεπώνυμο'].astype(str).str.contains(cc_search, case=False, na=False)]
+            # ΚΡΙΣΙΜΟ: ομαδοποίηση ανά όνομα αν κάποιος έχει πολλαπλές γραμμές —
+            # αλλιώς διπλότυπα form keys και σφάλμα.
+            _cc_name_col = 'NameClean' if 'NameClean' in df_cc_disp.columns else 'Ονοματεπώνυμο'
+            if df_cc_disp[_cc_name_col].duplicated().any():
+                _cc_agg = {'Ονοματεπώνυμο': 'first', 'Ποσό_Net': 'sum', 'Τηλέφωνο': 'first'}
+                if _cc_name_col == 'NameClean':
+                    df_cc_disp = df_cc_disp.groupby('NameClean', as_index=False).agg(_cc_agg)
+                else:
+                    df_cc_disp = df_cc_disp.groupby('Ονοματεπώνυμο', as_index=False).agg(
+                        {'Ποσό_Net': 'sum', 'Τηλέφωνο': 'first'}
+                    )
             df_cc_disp = df_cc_disp.sort_values('Ποσό_Net', ascending=False)
 
             for _, row in df_cc_disp.iterrows():
