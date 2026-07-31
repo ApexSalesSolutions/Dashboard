@@ -1074,6 +1074,7 @@ if _url_simple_mode:
     SIMPLE_DATA_FILE = "simple_view_data.json"
     SIMPLE_ORDERS_CACHE = "simple_all_orders_cache.csv"
     SIMPLE_NOTPLACED_CACHE = "simple_not_placed_cache.csv"
+    SIMPLE_CALL_OUTCOMES = ["✅ Παρήγγειλε", "📅 Θα παραγγείλει", "❌ Αρνήθηκε", "📵 Δεν απάντησε", "☎️ Λάθος τηλέφωνο"]
 
     def load_simple_data():
         if os.path.exists(SIMPLE_DATA_FILE):
@@ -1088,23 +1089,63 @@ if _url_simple_mode:
         with open(SIMPLE_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    simple_saved = load_simple_data()
+    simple_all = load_simple_data()
+    simple_notes = simple_all.get("_notes", {})
 
+    def simple_save_note(name, text):
+        notes = simple_all.get("_notes", {})
+        if text.strip():
+            notes[name] = text.strip()
+        elif name in notes:
+            del notes[name]
+        simple_all["_notes"] = notes
+        save_simple_data(simple_all)
+
+    if 'simple_sent_ids' not in st.session_state:
+        st.session_state.simple_sent_ids = set(simple_all.get(f"_contacted_{date.today().isoformat()}", []))
+
+    def simple_mark_contacted(row_key, outcome=None):
+        st.session_state.simple_sent_ids.add(row_key)
+        simple_all[f"_contacted_{date.today().isoformat()}"] = list(st.session_state.simple_sent_ids)
+        save_simple_data(simple_all)
+        st.toast(f"{outcome or '✅ Ολοκληρώθηκε!'}", icon="✅")
+
+    # === SIDEBAR: Upload αρχείων ===
     st.sidebar.header("📤 Ανέβασμα Αρχείων")
     su_orders = st.sidebar.file_uploader("📦 ALL_ORDERS", type=['xls', 'xlsx'], key="su_orders")
     su_notplaced = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER", type=['xls', 'xlsx'], key="su_notplaced")
 
+    # === SIDEBAR: Στόχοι — ίδια φιλοσοφία με την κύρια εφαρμογή ===
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🎯 Στόχος")
-    simple_goal = st.sidebar.number_input(
-        "💰 Στόχος Πωλήσεων (€)", min_value=0.0, step=100.0,
-        value=float(simple_saved.get("goal_sales", 0.0))
-    )
-    if simple_goal != simple_saved.get("goal_sales", 0.0):
-        simple_saved["goal_sales"] = simple_goal
-        save_simple_data(simple_saved)
+    st.sidebar.subheader("🎯 Στόχοι Καμπάνιας")
+    st.sidebar.caption("Συμπληρώνεις μία φορά — αποθηκεύονται αυτόματα.")
 
-    # --- Φόρτωση ALL_ORDERS (μόνιμη αποθήκευση, ίδια λογική με την κύρια εφαρμογή) ---
+    goal_sales = st.sidebar.number_input("💰 Στόχος Πωλήσεων (€)", min_value=0.0, step=100.0,
+                                          value=float(simple_all.get("goal_sales", 0.0)))
+    goal_actives = st.sidebar.number_input("👥 Στόχος Actives (μέλη)", min_value=0, step=1,
+                                            value=int(simple_all.get("goal_actives", 0)))
+    goal_removals = st.sidebar.number_input("🗑️ Στόχος Διαγραφών", min_value=0, step=1,
+                                             value=int(simple_all.get("goal_removals", 0)))
+    campaign_debt = st.sidebar.number_input("💳 Χρέος Καμπάνιας (€)", min_value=0.0, step=10.0,
+                                             value=float(simple_all.get("debt", 0.0)))
+    goal_stencil_growth = st.sidebar.number_input("📈 Στόχος Stencil Growth", step=1,
+                                                   value=int(simple_all.get("goal_stencil_growth", 0)))
+    st.sidebar.caption("👇 Χωρίς αρχείο Διαγραφών/Additions, καταχώρησέ τα χειροκίνητα:")
+    actual_removals = st.sidebar.number_input("🗑️ Πραγματικές Διαγραφές", min_value=0, step=1,
+                                               value=int(simple_all.get("actual_removals", 0)))
+    actual_additions = st.sidebar.number_input("🎉 Πραγματικά Additions", min_value=0, step=1,
+                                                value=int(simple_all.get("actual_additions", 0)))
+
+    _new_simple_goals = {
+        "goal_sales": goal_sales, "goal_actives": goal_actives, "goal_removals": goal_removals,
+        "debt": campaign_debt, "goal_stencil_growth": goal_stencil_growth,
+        "actual_removals": actual_removals, "actual_additions": actual_additions,
+    }
+    if any(_new_simple_goals.get(k) != simple_all.get(k) for k in _new_simple_goals):
+        simple_all.update(_new_simple_goals)
+        save_simple_data(simple_all)
+
+    # === Φόρτωση ALL_ORDERS (μόνιμη αποθήκευση) ===
     df_simple_orders = None
     if su_orders is not None:
         _raw = read_avon_export_file(su_orders)
@@ -1125,7 +1166,7 @@ if _url_simple_mode:
         except Exception:
             pass
 
-    # --- Φόρτωση NOT_PLACED_AN_ORDER ---
+    # === Φόρτωση NOT_PLACED_AN_ORDER ===
     df_simple_notplaced = None
     if su_notplaced is not None:
         _raw_np = read_avon_export_file(su_notplaced)
@@ -1164,24 +1205,51 @@ if _url_simple_mode:
 
     billed_mask = df_simple_orders['Status_Clean'].str.contains('ΤΙΜΟΛΟΓ|ΠΑΡΑΔΟΔ|ΠΑΡΑΔΟΘ', na=False)
     pending_mask = df_simple_orders['Status_Clean'].str.contains('ΠΑΡΕΛΗΦΘΗ', na=False)
+    empty_status_mask = df_simple_orders['Κατάσταση'].isna() | (df_simple_orders['Κατάσταση'].astype(str).str.strip().isin(['', 'nan', 'None']))
+    negative_mask = df_simple_orders['Ποσό_Net'] < -0.01
 
-    total_billed_simple = df_simple_orders[billed_mask & (df_simple_orders['Ποσό_Net'] > 0.01)]['Ποσό_Net'].sum()
-    total_pending_simple = df_simple_orders[pending_mask & (df_simple_orders['Ποσό_Net'] > 0.01)]['Ποσό_Net'].sum()
-    active_members_simple = df_simple_orders[billed_mask & (df_simple_orders['Ποσό_Net'] > 0.01)]['Ονοματεπώνυμο'].nunique()
-    not_ordered_count = len(df_simple_notplaced) if df_simple_notplaced is not None else None
+    df_billed_simple = df_simple_orders[billed_mask & (df_simple_orders['Ποσό_Net'] > 0.01)].copy()
+    df_pending_simple = df_simple_orders[pending_mask].copy()
+    df_creditcheck_simple = df_simple_orders[empty_status_mask].copy()
+    df_adjustments_simple = df_simple_orders[negative_mask].copy()
 
+    total_billed_simple = df_billed_simple['Ποσό_Net'].sum()
+    total_pending_simple = df_pending_simple['Ποσό_Net'].sum()
+    active_members_simple = df_billed_simple['Ονοματεπώνυμο'].nunique()
+    not_ordered_count = len(df_simple_notplaced) if df_simple_notplaced is not None else 0
+
+    stencil_growth_simple = actual_additions - actual_removals
+
+    # === METRICS ===
     mc1, mc2, mc3, mc4 = st.columns(4)
     mc1.metric("💰 Τιμολογημένες Πωλήσεις", f"{total_billed_simple:,.0f} €")
     mc2.metric("⏳ Προς Τιμολόγηση", f"{total_pending_simple:,.0f} €")
-    mc3.metric("👥 Ενεργά Μέλη", f"{active_members_simple}")
-    mc4.metric("📵 Δεν Παρήγγειλαν", f"{not_ordered_count}" if not_ordered_count is not None else "—")
+    mc3.metric("👥 Ενεργά Μέλη", f"{active_members_simple}" + (f" / {int(goal_actives)}" if goal_actives > 0 else ""))
+    mc4.metric("📵 Δεν Παρήγγειλαν", f"{not_ordered_count}")
 
-    if simple_goal > 0:
-        _prog_actual = total_billed_simple / simple_goal * 100
+    if goal_removals > 0 or actual_removals > 0:
+        st.caption(f"🗑️ Διαγραφές: {actual_removals}" + (f" / στόχος {int(goal_removals)}" if goal_removals > 0 else ""))
+
+    # === Stencil Growth panel ===
+    sg_color = "#28a745" if stencil_growth_simple >= goal_stencil_growth else "#dc3545"
+    st.markdown(
+        f"<div style='padding:14px 18px;border-radius:10px;background:var(--surface-1,#1e1e2e);"
+        f"border:1px solid {sg_color};margin:14px 0;'>"
+        f"<span style='font-size:13px;color:#888;'>📈 STENCIL GROWTH (Additions − Διαγραφές)</span><br>"
+        f"<span style='font-size:26px;font-weight:bold;color:{sg_color};'>{stencil_growth_simple:+d}</span>"
+        + (f"<span style='font-size:13px;color:#888;margin-left:10px;'>στόχος: {int(goal_stencil_growth):+d}</span>" if goal_stencil_growth else "")
+        + f"<br><span style='font-size:12px;color:#888;'>Additions: {actual_additions} | Διαγραφές: {actual_removals} (χειροκίνητη καταχώρηση)</span>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # === Progress bar πωλήσεων με υπερεπίτευξη ===
+    if goal_sales > 0:
+        _prog_actual = total_billed_simple / goal_sales * 100
         _prog_bar = min(100.0, _prog_actual)
         _over = _prog_actual > 100
         _color = "#ffd700" if _over else ("#d63384" if _prog_bar < 80 else "#28a745")
-        _label = f"**Πρόοδος Στόχου: {_prog_actual:.1f}%**"
+        _label = f"**Πρόοδος Στόχου Πωλήσεων: {_prog_actual:.1f}%**"
         if _over:
             _label += f" 🎉 (+{_prog_actual-100:.1f}% πάνω από τον στόχο!)"
         st.markdown(_label)
@@ -1191,27 +1259,149 @@ if _url_simple_mode:
             </div>
         """, unsafe_allow_html=True)
 
-    st.divider()
-    st.subheader("📵 Μέλη που δεν έχουν παραγγείλει ακόμα")
-    if df_simple_notplaced is None:
-        st.info("Ανέβασε το αρχείο NOT_PLACED_AN_ORDER για να δεις τη λίστα κλήσεων.")
-    elif df_simple_notplaced.empty:
-        st.success("✅ Όλα τα μέλη έχουν ήδη παραγγείλει!")
-    else:
-        _search = st.text_input("🔍 Αναζήτηση", placeholder="Πληκτρολόγησε όνομα...")
-        _disp = df_simple_notplaced
-        if _search:
-            _disp = _disp[_disp['Ονοματεπώνυμο'].astype(str).str.contains(_search, case=False, na=False)]
-        for _, _row in _disp.iterrows():
-            _phone_raw = _row.get('Τηλέφωνο')
-            _phone_digits = re.sub(r'\D', '', str(_phone_raw)) if pd.notna(_phone_raw) else ""
-            _phone_display = str(_phone_raw) if pd.notna(_phone_raw) and str(_phone_raw).strip() else "— χωρίς τηλέφωνο"
-            if _phone_digits:
-                st.markdown(f"**{_row['Ονοματεπώνυμο']}** — 📞 [{_phone_display}](tel:{_phone_digits})", unsafe_allow_html=False)
-            else:
-                st.markdown(f"**{_row['Ονοματεπώνυμο']}** — 📞 {_phone_display}")
+    # === ΕΚΤΙΜΗΣΗ ΠΡΟΜΗΘΕΙΑΣ — ίδιοι πίνακες με την κύρια εφαρμογή ===
+    def simple_get_commission_pct(pct, table_num):
+        if table_num == 1:
+            if pct >= 105: return 0.065
+            elif pct >= 100: return 0.055
+            elif pct >= 95: return 0.045
+            else: return 0.035
+        else:
+            if pct >= 105: return 0.05
+            elif pct >= 100: return 0.045
+            elif pct >= 95: return 0.04
+            else: return 0.035
+
+    active_fee_total_simple = active_members_simple * 0.85
+    net_sales_simple = max(0.0, total_billed_simple - campaign_debt)
+    real_sales_simple = max(0.0, net_sales_simple - active_fee_total_simple)
+    achievement_pct_simple = (real_sales_simple / goal_sales * 100) if goal_sales > 0 else 0.0
+    stencil_achieved_simple = stencil_growth_simple >= goal_stencil_growth
+    actives_achieved_simple = goal_actives > 0 and active_members_simple >= goal_actives
+    actives_bonus_simple = 300.0 if actives_achieved_simple else 0.0
+
+    comm_pct_t1 = simple_get_commission_pct(achievement_pct_simple, 1)
+    comm_pct_t2 = simple_get_commission_pct(achievement_pct_simple, 2)
+    comm_base_t1 = real_sales_simple * comm_pct_t1
+    comm_base_t2 = real_sales_simple * comm_pct_t2
+    comm_final_t1 = (comm_base_t1 + actives_bonus_simple) * 1.24
+    comm_final_t2 = (comm_base_t2 + actives_bonus_simple) * 1.24
+
+    with st.expander("💼 Εκτίμηση Προμήθειας", expanded=False):
+        pc1, pc2 = st.columns(2)
+        pc1.metric("💰 Πωλήσεις (Τιμολ.)", f"{total_billed_simple:,.0f} €")
+        pc2.metric("💳 Χρέος Καμπάνιας", f"-{campaign_debt:,.0f} €")
+        pc3, pc4 = st.columns(2)
+        pc3.metric(f"👥 Τέλος Ενεργών ({active_members_simple} × 0,85€)", f"-{active_fee_total_simple:,.2f} €")
+        pc4.metric("🧮 Πραγματικές Πωλήσεις", f"{real_sales_simple:,.0f} €", delta=f"{achievement_pct_simple:.1f}% του πλάνου")
+        if actives_achieved_simple:
+            st.success(f"✅ Τα ενεργά μέλη ({active_members_simple}) πιάνουν τον στόχο ({int(goal_actives)}) — μπόνους +300€")
+        st.markdown("---")
+        tb1, tb2 = st.columns(2)
+        with tb1:
+            t1_color = "#28a745" if stencil_achieved_simple else "#666"
+            st.markdown(
+                f"<div style='padding:12px 16px;border-radius:8px;background:rgba(40,167,69,0.10);border:1px solid {t1_color};'>"
+                f"<span style='font-size:12px;color:#888;'>ΠΙΝΑΚΑΣ 1 {'✅' if stencil_achieved_simple else '(αν πιάσεις το Stencil Growth)'}</span><br>"
+                f"<span style='font-size:12px;color:#888;'>Ποσοστό: {comm_pct_t1:.1%} | Βασική: {comm_base_t1:,.0f}€</span><br>"
+                f"<span style='font-size:22px;font-weight:bold;color:#28a745;'>{comm_final_t1:,.2f} €</span></div>",
+                unsafe_allow_html=True
+            )
+        with tb2:
+            t2_color = "#dc3545" if not stencil_achieved_simple else "#666"
+            st.markdown(
+                f"<div style='padding:12px 16px;border-radius:8px;background:rgba(220,53,69,0.10);border:1px solid {t2_color};'>"
+                f"<span style='font-size:12px;color:#888;'>ΠΙΝΑΚΑΣ 2 {'❌' if stencil_achieved_simple else '(τρέχον)'}</span><br>"
+                f"<span style='font-size:12px;color:#888;'>Ποσοστό: {comm_pct_t2:.1%} | Βασική: {comm_base_t2:,.0f}€</span><br>"
+                f"<span style='font-size:22px;font-weight:bold;color:#dc3545;'>{comm_final_t2:,.2f} €</span></div>",
+                unsafe_allow_html=True
+            )
+
+    # === Βοηθητική συνάρτηση εμφάνισης καρτών ανά μέλος (κοινή για όλα τα tabs) ===
+    def render_simple_card(df, prefix, show_amount=True, note_placeholder="π.χ. σημείωση..."):
+        for _, row in df.iterrows():
+            name = row['Ονοματεπώνυμο']
+            row_key = f"{prefix}_{name}"
+            if row_key in st.session_state.simple_sent_ids:
+                continue
+            note_text = simple_notes.get(name, "")
+            phone_raw = row.get('Τηλέφωνο')
+            phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+            phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
+            amt_str = f" — {row['Ποσό_Net']:,.2f}€" if show_amount and 'Ποσό_Net' in row else ""
+            label = f"**{name}** — 📞 {phone_display}{amt_str}{' 📝' if note_text else ''}"
+            with st.expander(label, expanded=False):
+                if phone_digits:
+                    st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
+                if note_text:
+                    st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
+                with st.form(key=f"noteform_{row_key}", clear_on_submit=False, border=False):
+                    nfc1, nfc2 = st.columns([5, 1])
+                    new_note = nfc1.text_input("Σημείωση:", value=note_text, key=f"note_{row_key}",
+                                               placeholder=note_placeholder, label_visibility="collapsed")
+                    submitted = nfc2.form_submit_button("💾")
+                if submitted and new_note != note_text:
+                    simple_save_note(name, new_note)
+                    simple_notes[name] = new_note
+                    st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                    st.rerun()
+                outcome_sel = st.selectbox("Αποτέλεσμα", ["— Επίλεξε —"] + SIMPLE_CALL_OUTCOMES,
+                                           key=f"outcome_{row_key}", label_visibility="collapsed")
+                if outcome_sel != "— Επίλεξε —":
+                    simple_mark_contacted(row_key, outcome_sel)
+                    st.rerun()
+
+    # === TABS — μόνο ό,τι υποστηρίζεται χωρίς ιστορικό ===
+    simple_tab_labels = [
+        f"⏳ Προς Τιμολόγηση ({len(df_pending_simple)})",
+        f"🚚 Τιμολογημένες ({len(df_billed_simple)})",
+        f"📞 Εκκρεμείς ({not_ordered_count})",
+        f"⚙️ Adjustments ({len(df_adjustments_simple)})",
+        f"🏦 Πιστωτικός Έλεγχος ({len(df_creditcheck_simple)})",
+    ]
+    s_tabs = st.tabs(simple_tab_labels)
+
+    with s_tabs[0]:
+        if df_pending_simple.empty:
+            st.info("Καμία παραγγελία σε αναμονή.")
+        else:
+            render_simple_card(df_pending_simple, "pt")
+
+    with s_tabs[1]:
+        if df_billed_simple.empty:
+            st.info("Καμία τιμολογημένη παραγγελία ακόμα.")
+        else:
+            render_simple_card(df_billed_simple.sort_values('Ποσό_Net', ascending=False), "bl")
+
+    with s_tabs[2]:
+        if df_simple_notplaced is None:
+            st.info("Ανέβασε το αρχείο NOT_PLACED_AN_ORDER για να δεις τη λίστα κλήσεων.")
+        elif df_simple_notplaced.empty:
+            st.success("✅ Όλα τα μέλη έχουν ήδη παραγγείλει!")
+        else:
+            _search = st.text_input("🔍 Αναζήτηση", key="simple_search_todo", placeholder="Πληκτρολόγησε όνομα...")
+            _disp = df_simple_notplaced
+            if _search:
+                _disp = _disp[_disp['Ονοματεπώνυμο'].astype(str).str.contains(_search, case=False, na=False)]
+            render_simple_card(_disp, "todo", show_amount=False, note_placeholder="π.χ. θα παραγγείλει αύριο...")
+
+    with s_tabs[3]:
+        if df_adjustments_simple.empty:
+            st.success("✅ Δεν υπάρχουν adjustments σε αυτή την καμπάνια.")
+        else:
+            st.metric("⚙️ Σύνολο Adjustments", f"{len(df_adjustments_simple)}")
+            render_simple_card(df_adjustments_simple, "adj")
+
+    with s_tabs[4]:
+        if df_creditcheck_simple.empty:
+            st.success("✅ Καμία παραγγελία σε πιστωτικό έλεγχο.")
+        else:
+            st.metric("🏦 Σύνολο σε Πιστωτικό Έλεγχο", f"{len(df_creditcheck_simple)}")
+            render_simple_card(df_creditcheck_simple, "cc")
 
     st.stop()
+
+
 
 try:
     df_sales_all, df_todo_raw, df_removals_raw, df_members_raw = fetch_sheet_data(EXCEL_URL)
