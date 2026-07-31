@@ -34,6 +34,13 @@ st.set_page_config(page_title="Avon Strategic AI v800 (Machine Learning Edition)
 # ειδικά για να βάλει λευκά γράμματα στο sidebar της βοηθού.
 _url_assistant_mode = st.query_params.get("view", "") == "assistant"
 
+# === ΑΠΛΗ, ΑΝΕΞΑΡΤΗΤΗ ΛΕΙΤΟΥΡΓΙΑ (?view=simple) ===
+# Για συνάδελφους με ΔΙΚΗ ΤΟΥΣ, ΕΝΤΕΛΩΣ ΔΙΑΦΟΡΕΤΙΚΗ ομάδα (άλλα μέλη, άλλο
+# ιστορικό) — ΔΕΝ αγγίζει καθόλου το Google Sheet, δεν ανακατεύει δεδομένα.
+# Δουλεύει αποκλειστικά από τα 2 αρχεία που ανεβάζει η ίδια, χωρίς ιστορικό,
+# χωρίς πρόβλεψη — μόνο ζωντανή εικόνα της τρέχουσας καμπάνιας.
+_url_simple_mode = st.query_params.get("view", "") == "simple"
+
 st.markdown("""
     <style>
     .stApp { background-color: #0b0f19; color: #e2e8f0; }
@@ -787,6 +794,142 @@ def clean_duplicate_columns(df):
 # @st.cache_data, το αποτέλεσμα "παγώνει" για 5 λεπτά — μέσα σε αυτό το
 # διάστημα, όσες αλλαγές κι αν κάνεις, δεν ξαναφορτώνεται το Sheet από το
 # μηδέν, μόνο οι υπολογισμοί που πραγματικά χρειάζονται τρέχουν ξανά.
+
+def read_avon_export_file(uploaded_file):
+    """
+    Διαβάζει raw αρχείο export από την Avon (.xls παλιού τύπου ή .xlsx),
+    δοκιμάζοντας πολλαπλές μεθόδους ανάγνωσης — κάποια web reports
+    αποθηκεύονται ως HTML πίνακας με επέκταση .xls.
+    """
+    raw_bytes = uploaded_file.getvalue()
+    for engine in ('xlrd', 'openpyxl', 'calamine'):
+        try:
+            return pd.read_excel(BytesIO(raw_bytes), engine=engine)
+        except Exception:
+            continue
+    try:
+        tables = pd.read_html(BytesIO(raw_bytes))
+        if tables:
+            return tables[0]
+    except Exception:
+        pass
+    return None
+
+def map_all_orders_to_schema(df_raw, manual_camp_code=None):
+    """
+    Μετατρέπει το raw ALL_ORDERS export της Avon στη μορφή που περιμένει
+    η υπόλοιπη εφαρμογή (ίδιες στήλες με το Φύλλο1 του Google Sheet).
+    Το raw αρχείο έχει ΕΝΤΕΛΩΣ διαφορετικά ονόματα στηλών, γι' αυτό η
+    αντιστοίχιση γίνεται ρητά εδώ, αντί να βασιζόμαστε στη γενική
+    ασαφή αναζήτηση (fuzzy matching) που χρησιμοποιείται αλλού.
+    """
+    df_raw = df_raw.copy()
+    df_raw.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_raw.columns]
+
+    def find_col(*keywords):
+        # Σημαντικό: ελέγχουμε ΛΕΞΗ-ΚΛΕΙΔΙ ΠΡΩΤΑ (με τη σειρά προτεραιότητας),
+        # όχι στήλη-στήλη — αλλιώς μια λιγότερο επιθυμητή στήλη που τυχαίνει
+        # να έρχεται νωρίτερα στο αρχείο (π.χ. "Πρωϊνό Τηλέφωνο") κερδίζει
+        # έναντι της σωστής (π.χ. "Κινητό Τηλέφωνο") μόνο επειδή προηγείται.
+        for kw in keywords:
+            for c in df_raw.columns:
+                if kw in remove_accents(str(c)).upper():
+                    return c
+        return None
+
+    col_camp   = find_col('ΚΑΜΠ')            # "Καμπ."
+    col_name   = find_col('ΣΤΟΙΧΕΙΑ ΜΕΛΟΥΣ', 'ΟΝΟΜΑ', 'NAME')
+    col_amount = find_col('ΠΛΗΡΩΤΕΟ', 'ΠΟΣΟ', 'AMOUNT')
+    col_status = find_col('ΚΑΤΑΣΤΑΣΗ', 'STATUS')
+    col_phone  = find_col('ΚΙΝΗΤΟ', 'ΤΗΛ', 'PHONE')
+    col_date   = find_col('ΗΜΕΡΟΜΗΝΙΑ ΠΑΡΑΓΓΕΛΙΑΣ', 'ΗΜΕΡΟΜ', 'DATE')
+
+    missing = [n for n, c in [('Όνομα', col_name), ('Ποσό', col_amount), ('Κατάσταση', col_status)] if c is None]
+    if missing:
+        return None, f"Δεν βρέθηκαν οι στήλες: {', '.join(missing)}. Έλεγξε τη μορφή του αρχείου."
+
+    out = pd.DataFrame()
+    out['Ονοματεπώνυμο'] = df_raw[col_name]
+    out['Ποσό'] = df_raw[col_amount]
+    out['Κατάσταση'] = df_raw[col_status]
+    out['Τηλέφωνο'] = df_raw[col_phone] if col_phone else None
+    if col_date:
+        out['Ημερομηνία'] = pd.to_datetime(df_raw[col_date], format='%d/%m/%Y', errors='coerce')
+    # Fallback αν κάποιες ημερομηνίες δεν διαβάστηκαν με το ελληνικό format
+    if col_date and out['Ημερομηνία'].isna().all():
+        out['Ημερομηνία'] = pd.to_datetime(df_raw[col_date], errors='coerce')
+
+    # === Μετατροπή "Καμπ." (π.χ. 7) σε YYYYMM (π.χ. 202607) ===
+    if manual_camp_code:
+        out['Καμπάνια'] = int(manual_camp_code)
+    elif col_camp and col_date:
+        camp_num = pd.to_numeric(df_raw[col_camp], errors='coerce').dropna()
+        camp_num = int(camp_num.mode().iloc[0]) if not camp_num.empty else None
+        valid_dates = out['Ημερομηνία'].dropna()
+        camp_year = int(valid_dates.dt.year.mode().iloc[0]) if not valid_dates.empty else date.today().year
+        if camp_num:
+            out['Καμπάνια'] = camp_year * 100 + camp_num
+        else:
+            out['Καμπάνια'] = int(f"{date.today().year}{date.today().month:02d}")
+    else:
+        out['Καμπάνια'] = int(f"{date.today().year}{date.today().month:02d}")
+
+    return out, None
+
+def map_not_placed_to_schema(df_raw, manual_camp_code=None):
+    """
+    Ίδια λογική με το map_all_orders_to_schema — το raw NOT_PLACED_AN_ORDER
+    export της Avon έχει το όνομα στη στήλη 'Στοιχεία Μέλους' και ΔΥΟ στήλες
+    τηλεφώνου ('Κινητό...' και 'Πρωϊνό...') — χωρίς ρητή προτεραιότητα στο
+    'Κινητό', η γενική αναζήτηση έπιανε λάθος στήλη (Πρωινό). Επιπλέον
+    φιλτράρει ΜΟΝΟ την πιο πρόσφατη (τρέχουσα) καμπάνια, αν το αρχείο
+    περιέχει στήλη καμπάνιας — αποτρέπει να μπουν κατά λάθος μέσα και
+    παλαιότερες γραμμές. Αν δοθεί manual_camp_code (YYYYMM), φιλτράρει με
+    βάση αυτό αντί για την αυτόματη ανίχνευση.
+    """
+    df_raw = df_raw.copy()
+    df_raw.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_raw.columns]
+
+    def find_col(*keywords):
+        for kw in keywords:
+            for c in df_raw.columns:
+                if kw in remove_accents(str(c)).upper():
+                    return c
+        return None
+
+    col_name  = find_col('ΣΤΟΙΧΕΙΑ ΜΕΛΟΥΣ', 'ΟΝΟΜΑ', 'NAME')
+    col_phone = find_col('ΚΙΝΗΤΟ', 'ΤΗΛ', 'PHONE')
+    col_camp  = find_col('ΚΑΜΠ', 'CAMPAIGN')
+
+    if not col_name:
+        return None, "Δεν βρέθηκε στήλη ονόματος (αναμενόταν 'Στοιχεία Μέλους').", None
+
+    # === Φίλτρο ΜΟΝΟ τρέχουσας καμπάνιας ===
+    # Η στήλη καμπάνιας (π.χ. "Καμπάνια Παραγγελίας") έχει ΑΠΛΟ αριθμό
+    # (π.χ. "7"), ΟΧΙ την πλήρη μορφή YYYYMM (202607) — ίδιο μοτίβο με το
+    # "Καμπ." στο ALL_ORDERS. Κρατάμε μόνο την πιο πρόσφατη τιμή που
+    # βρίσκεται μέσα, και τη μετατρέπουμε σε YYYYMM χρησιμοποιώντας το
+    # τρέχον έτος (δεν υπάρχει στήλη ημερομηνίας εδώ για να το εξάγουμε,
+    # αφού πρόκειται για μέλη που ΔΕΝ έχουν παραγγείλει ακόμα) — εκτός αν ο
+    # χρήστης δώσει ρητά manual_camp_code, οπότε φιλτράρουμε με βάση αυτό.
+    detected_camp_note = None
+    if col_camp:
+        camp_nums = pd.to_numeric(df_raw[col_camp], errors='coerce').dropna()
+        if not camp_nums.empty:
+            if manual_camp_code:
+                target_num = int(str(int(manual_camp_code))[-2:])
+                df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == target_num].copy()
+                detected_camp_note = str(int(manual_camp_code))
+            else:
+                latest_camp_num = int(sorted(camp_nums.unique(), reverse=True)[0])
+                df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == latest_camp_num].copy()
+                detected_camp_note = f"{date.today().year}{latest_camp_num:02d}"
+
+    out = pd.DataFrame()
+    out['Ονοματεπώνυμο'] = df_raw[col_name]
+    out['Τηλέφωνο'] = df_raw[col_phone] if col_phone else None
+    return out, None, detected_camp_note
+
 @st.cache_data(ttl=300, show_spinner="📥 Φόρτωση δεδομένων από Google Sheets...")
 def fetch_sheet_data(url):
     response = requests.get(url)
@@ -917,6 +1060,159 @@ def compute_history_detailed(df_sales_all, camp_col, status_col_global, historic
 
     return history_detailed, sheet4_history, all_historical_nets, global_avg_basket
 
+# =========================================================================
+# ΑΠΛΗ, ΑΝΕΞΑΡΤΗΤΗ ΛΕΙΤΟΥΡΓΙΑ — για συνάδελφους με δική τους, εντελώς
+# διαφορετική ομάδα. ΔΕΝ αγγίζει το Google Sheet — σταματάει (st.stop) πριν
+# καν φτάσει στο fetch_sheet_data(), οπότε καμία πιθανότητα ανάμειξης
+# δεδομένων. Λειτουργεί αποκλειστικά από τα 2 ανεβασμένα αρχεία, με τη δική
+# της, ξεχωριστή, μόνιμη αποθήκευση (δεν αγγίζει το campaign_goals.json).
+# =========================================================================
+if _url_simple_mode:
+    st.title("🛡️ Πίνακας Ελέγχου Καμπάνιας — Απλή Προβολή")
+    st.caption("Ανεξάρτητη προβολή — δουλεύει αποκλειστικά από τα 2 αρχεία που ανεβάζεις, χωρίς ιστορικό ή πρόβλεψη.")
+
+    SIMPLE_DATA_FILE = "simple_view_data.json"
+    SIMPLE_ORDERS_CACHE = "simple_all_orders_cache.csv"
+    SIMPLE_NOTPLACED_CACHE = "simple_not_placed_cache.csv"
+
+    def load_simple_data():
+        if os.path.exists(SIMPLE_DATA_FILE):
+            try:
+                with open(SIMPLE_DATA_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def save_simple_data(data):
+        with open(SIMPLE_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    simple_saved = load_simple_data()
+
+    st.sidebar.header("📤 Ανέβασμα Αρχείων")
+    su_orders = st.sidebar.file_uploader("📦 ALL_ORDERS", type=['xls', 'xlsx'], key="su_orders")
+    su_notplaced = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER", type=['xls', 'xlsx'], key="su_notplaced")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🎯 Στόχος")
+    simple_goal = st.sidebar.number_input(
+        "💰 Στόχος Πωλήσεων (€)", min_value=0.0, step=100.0,
+        value=float(simple_saved.get("goal_sales", 0.0))
+    )
+    if simple_goal != simple_saved.get("goal_sales", 0.0):
+        simple_saved["goal_sales"] = simple_goal
+        save_simple_data(simple_saved)
+
+    # --- Φόρτωση ALL_ORDERS (μόνιμη αποθήκευση, ίδια λογική με την κύρια εφαρμογή) ---
+    df_simple_orders = None
+    if su_orders is not None:
+        _raw = read_avon_export_file(su_orders)
+        if _raw is not None and not _raw.empty:
+            _mapped, _err = map_all_orders_to_schema(_raw)
+            if _err:
+                st.sidebar.error(f"⚠️ {_err}")
+            else:
+                df_simple_orders = _mapped
+                _mapped.to_csv(SIMPLE_ORDERS_CACHE, index=False)
+                st.sidebar.success(f"✅ ALL_ORDERS: {len(_mapped)} γραμμές")
+        else:
+            st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση — έλεγξε τη μορφή αρχείου.")
+    elif os.path.exists(SIMPLE_ORDERS_CACHE):
+        try:
+            df_simple_orders = pd.read_csv(SIMPLE_ORDERS_CACHE)
+            st.sidebar.caption("💾 Χρησιμοποιείται αποθηκευμένο ALL_ORDERS.")
+        except Exception:
+            pass
+
+    # --- Φόρτωση NOT_PLACED_AN_ORDER ---
+    df_simple_notplaced = None
+    if su_notplaced is not None:
+        _raw_np = read_avon_export_file(su_notplaced)
+        if _raw_np is not None and not _raw_np.empty:
+            _mapped_np, _err_np, _camp_note = map_not_placed_to_schema(_raw_np)
+            if _err_np:
+                st.sidebar.error(f"⚠️ {_err_np}")
+            else:
+                df_simple_notplaced = _mapped_np
+                _mapped_np.to_csv(SIMPLE_NOTPLACED_CACHE, index=False)
+                st.sidebar.success(f"✅ NOT_PLACED: {len(_mapped_np)} γραμμές")
+        else:
+            st.sidebar.error("⚠️ Δεν κατέστη δυνατή η ανάγνωση — έλεγξε τη μορφή αρχείου.")
+    elif os.path.exists(SIMPLE_NOTPLACED_CACHE):
+        try:
+            df_simple_notplaced = pd.read_csv(SIMPLE_NOTPLACED_CACHE)
+            st.sidebar.caption("💾 Χρησιμοποιείται αποθηκευμένο NOT_PLACED.")
+        except Exception:
+            pass
+
+    if os.path.exists(SIMPLE_ORDERS_CACHE) or os.path.exists(SIMPLE_NOTPLACED_CACHE):
+        if st.sidebar.button("🗑️ Καθαρισμός αποθηκευμένων αρχείων"):
+            for _f in (SIMPLE_ORDERS_CACHE, SIMPLE_NOTPLACED_CACHE):
+                if os.path.exists(_f):
+                    os.remove(_f)
+            st.rerun()
+
+    if df_simple_orders is None:
+        st.info("📤 Ανέβασε το αρχείο ALL_ORDERS από το sidebar για να ξεκινήσεις.")
+        st.stop()
+
+    # === ΥΠΟΛΟΓΙΣΜΟΙ — καθαρά από το ανεβασμένο αρχείο, καμία εξάρτηση ιστορικού ===
+    df_simple_orders['Status_Clean'] = df_simple_orders['Κατάσταση'].apply(remove_accents).str.upper()
+    df_simple_orders = df_simple_orders[~df_simple_orders['Status_Clean'].str.contains('ΑΚΥΡ|ΑΠΟΡ|CANCEL|REJECT', na=False)]
+    df_simple_orders['Ποσό_Net'] = df_simple_orders['Ποσό'].apply(parse_money) / 1.24
+
+    billed_mask = df_simple_orders['Status_Clean'].str.contains('ΤΙΜΟΛΟΓ|ΠΑΡΑΔΟΔ|ΠΑΡΑΔΟΘ', na=False)
+    pending_mask = df_simple_orders['Status_Clean'].str.contains('ΠΑΡΕΛΗΦΘΗ', na=False)
+
+    total_billed_simple = df_simple_orders[billed_mask & (df_simple_orders['Ποσό_Net'] > 0.01)]['Ποσό_Net'].sum()
+    total_pending_simple = df_simple_orders[pending_mask & (df_simple_orders['Ποσό_Net'] > 0.01)]['Ποσό_Net'].sum()
+    active_members_simple = df_simple_orders[billed_mask & (df_simple_orders['Ποσό_Net'] > 0.01)]['Ονοματεπώνυμο'].nunique()
+    not_ordered_count = len(df_simple_notplaced) if df_simple_notplaced is not None else None
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("💰 Τιμολογημένες Πωλήσεις", f"{total_billed_simple:,.0f} €")
+    mc2.metric("⏳ Προς Τιμολόγηση", f"{total_pending_simple:,.0f} €")
+    mc3.metric("👥 Ενεργά Μέλη", f"{active_members_simple}")
+    mc4.metric("📵 Δεν Παρήγγειλαν", f"{not_ordered_count}" if not_ordered_count is not None else "—")
+
+    if simple_goal > 0:
+        _prog_actual = total_billed_simple / simple_goal * 100
+        _prog_bar = min(100.0, _prog_actual)
+        _over = _prog_actual > 100
+        _color = "#ffd700" if _over else ("#d63384" if _prog_bar < 80 else "#28a745")
+        _label = f"**Πρόοδος Στόχου: {_prog_actual:.1f}%**"
+        if _over:
+            _label += f" 🎉 (+{_prog_actual-100:.1f}% πάνω από τον στόχο!)"
+        st.markdown(_label)
+        st.markdown(f"""
+            <div style="width:100%;background:#333;border-radius:10px;margin-bottom:16px;">
+                <div style="width:{_prog_bar}%;background:{_color};height:22px;border-radius:10px;"></div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+    st.subheader("📵 Μέλη που δεν έχουν παραγγείλει ακόμα")
+    if df_simple_notplaced is None:
+        st.info("Ανέβασε το αρχείο NOT_PLACED_AN_ORDER για να δεις τη λίστα κλήσεων.")
+    elif df_simple_notplaced.empty:
+        st.success("✅ Όλα τα μέλη έχουν ήδη παραγγείλει!")
+    else:
+        _search = st.text_input("🔍 Αναζήτηση", placeholder="Πληκτρολόγησε όνομα...")
+        _disp = df_simple_notplaced
+        if _search:
+            _disp = _disp[_disp['Ονοματεπώνυμο'].astype(str).str.contains(_search, case=False, na=False)]
+        for _, _row in _disp.iterrows():
+            _phone_raw = _row.get('Τηλέφωνο')
+            _phone_digits = re.sub(r'\D', '', str(_phone_raw)) if pd.notna(_phone_raw) else ""
+            _phone_display = str(_phone_raw) if pd.notna(_phone_raw) and str(_phone_raw).strip() else "— χωρίς τηλέφωνο"
+            if _phone_digits:
+                st.markdown(f"**{_row['Ονοματεπώνυμο']}** — 📞 [{_phone_display}](tel:{_phone_digits})", unsafe_allow_html=False)
+            else:
+                st.markdown(f"**{_row['Ονοματεπώνυμο']}** — 📞 {_phone_display}")
+
+    st.stop()
+
 try:
     df_sales_all, df_todo_raw, df_removals_raw, df_members_raw = fetch_sheet_data(EXCEL_URL)
 
@@ -942,87 +1238,6 @@ try:
     if not _is_assistant_early:
         st.sidebar.markdown("### 📤 Γρήγορη Ενημέρωση (προαιρετικό)")
         st.sidebar.caption("Ανέβασε τα raw αρχεία από το Avon report — χωρίς μετατροπή δεκαδικού ή αντιγραφή στο Google Sheet.")
-
-    def read_avon_export_file(uploaded_file):
-        """
-        Διαβάζει raw αρχείο export από την Avon (.xls παλιού τύπου ή .xlsx),
-        δοκιμάζοντας πολλαπλές μεθόδους ανάγνωσης — κάποια web reports
-        αποθηκεύονται ως HTML πίνακας με επέκταση .xls.
-        """
-        raw_bytes = uploaded_file.getvalue()
-        for engine in ('xlrd', 'openpyxl', 'calamine'):
-            try:
-                return pd.read_excel(BytesIO(raw_bytes), engine=engine)
-            except Exception:
-                continue
-        try:
-            tables = pd.read_html(BytesIO(raw_bytes))
-            if tables:
-                return tables[0]
-        except Exception:
-            pass
-        return None
-
-    def map_all_orders_to_schema(df_raw, manual_camp_code=None):
-        """
-        Μετατρέπει το raw ALL_ORDERS export της Avon στη μορφή που περιμένει
-        η υπόλοιπη εφαρμογή (ίδιες στήλες με το Φύλλο1 του Google Sheet).
-        Το raw αρχείο έχει ΕΝΤΕΛΩΣ διαφορετικά ονόματα στηλών, γι' αυτό η
-        αντιστοίχιση γίνεται ρητά εδώ, αντί να βασιζόμαστε στη γενική
-        ασαφή αναζήτηση (fuzzy matching) που χρησιμοποιείται αλλού.
-        """
-        df_raw = df_raw.copy()
-        df_raw.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_raw.columns]
-
-        def find_col(*keywords):
-            # Σημαντικό: ελέγχουμε ΛΕΞΗ-ΚΛΕΙΔΙ ΠΡΩΤΑ (με τη σειρά προτεραιότητας),
-            # όχι στήλη-στήλη — αλλιώς μια λιγότερο επιθυμητή στήλη που τυχαίνει
-            # να έρχεται νωρίτερα στο αρχείο (π.χ. "Πρωϊνό Τηλέφωνο") κερδίζει
-            # έναντι της σωστής (π.χ. "Κινητό Τηλέφωνο") μόνο επειδή προηγείται.
-            for kw in keywords:
-                for c in df_raw.columns:
-                    if kw in remove_accents(str(c)).upper():
-                        return c
-            return None
-
-        col_camp   = find_col('ΚΑΜΠ')            # "Καμπ."
-        col_name   = find_col('ΣΤΟΙΧΕΙΑ ΜΕΛΟΥΣ', 'ΟΝΟΜΑ', 'NAME')
-        col_amount = find_col('ΠΛΗΡΩΤΕΟ', 'ΠΟΣΟ', 'AMOUNT')
-        col_status = find_col('ΚΑΤΑΣΤΑΣΗ', 'STATUS')
-        col_phone  = find_col('ΚΙΝΗΤΟ', 'ΤΗΛ', 'PHONE')
-        col_date   = find_col('ΗΜΕΡΟΜΗΝΙΑ ΠΑΡΑΓΓΕΛΙΑΣ', 'ΗΜΕΡΟΜ', 'DATE')
-
-        missing = [n for n, c in [('Όνομα', col_name), ('Ποσό', col_amount), ('Κατάσταση', col_status)] if c is None]
-        if missing:
-            return None, f"Δεν βρέθηκαν οι στήλες: {', '.join(missing)}. Έλεγξε τη μορφή του αρχείου."
-
-        out = pd.DataFrame()
-        out['Ονοματεπώνυμο'] = df_raw[col_name]
-        out['Ποσό'] = df_raw[col_amount]
-        out['Κατάσταση'] = df_raw[col_status]
-        out['Τηλέφωνο'] = df_raw[col_phone] if col_phone else None
-        if col_date:
-            out['Ημερομηνία'] = pd.to_datetime(df_raw[col_date], format='%d/%m/%Y', errors='coerce')
-        # Fallback αν κάποιες ημερομηνίες δεν διαβάστηκαν με το ελληνικό format
-        if col_date and out['Ημερομηνία'].isna().all():
-            out['Ημερομηνία'] = pd.to_datetime(df_raw[col_date], errors='coerce')
-
-        # === Μετατροπή "Καμπ." (π.χ. 7) σε YYYYMM (π.χ. 202607) ===
-        if manual_camp_code:
-            out['Καμπάνια'] = int(manual_camp_code)
-        elif col_camp and col_date:
-            camp_num = pd.to_numeric(df_raw[col_camp], errors='coerce').dropna()
-            camp_num = int(camp_num.mode().iloc[0]) if not camp_num.empty else None
-            valid_dates = out['Ημερομηνία'].dropna()
-            camp_year = int(valid_dates.dt.year.mode().iloc[0]) if not valid_dates.empty else date.today().year
-            if camp_num:
-                out['Καμπάνια'] = camp_year * 100 + camp_num
-            else:
-                out['Καμπάνια'] = int(f"{date.today().year}{date.today().month:02d}")
-        else:
-            out['Καμπάνια'] = int(f"{date.today().year}{date.today().month:02d}")
-
-        return out, None
 
     if _is_assistant_early:
         up_all_orders = None
@@ -1112,60 +1327,6 @@ try:
                 pass
             st.rerun()
 
-
-    def map_not_placed_to_schema(df_raw, manual_camp_code=None):
-        """
-        Ίδια λογική με το map_all_orders_to_schema — το raw NOT_PLACED_AN_ORDER
-        export της Avon έχει το όνομα στη στήλη 'Στοιχεία Μέλους' και ΔΥΟ στήλες
-        τηλεφώνου ('Κινητό...' και 'Πρωϊνό...') — χωρίς ρητή προτεραιότητα στο
-        'Κινητό', η γενική αναζήτηση έπιανε λάθος στήλη (Πρωινό). Επιπλέον
-        φιλτράρει ΜΟΝΟ την πιο πρόσφατη (τρέχουσα) καμπάνια, αν το αρχείο
-        περιέχει στήλη καμπάνιας — αποτρέπει να μπουν κατά λάθος μέσα και
-        παλαιότερες γραμμές. Αν δοθεί manual_camp_code (YYYYMM), φιλτράρει με
-        βάση αυτό αντί για την αυτόματη ανίχνευση.
-        """
-        df_raw = df_raw.copy()
-        df_raw.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df_raw.columns]
-
-        def find_col(*keywords):
-            for kw in keywords:
-                for c in df_raw.columns:
-                    if kw in remove_accents(str(c)).upper():
-                        return c
-            return None
-
-        col_name  = find_col('ΣΤΟΙΧΕΙΑ ΜΕΛΟΥΣ', 'ΟΝΟΜΑ', 'NAME')
-        col_phone = find_col('ΚΙΝΗΤΟ', 'ΤΗΛ', 'PHONE')
-        col_camp  = find_col('ΚΑΜΠ', 'CAMPAIGN')
-
-        if not col_name:
-            return None, "Δεν βρέθηκε στήλη ονόματος (αναμενόταν 'Στοιχεία Μέλους').", None
-
-        # === Φίλτρο ΜΟΝΟ τρέχουσας καμπάνιας ===
-        # Η στήλη καμπάνιας (π.χ. "Καμπάνια Παραγγελίας") έχει ΑΠΛΟ αριθμό
-        # (π.χ. "7"), ΟΧΙ την πλήρη μορφή YYYYMM (202607) — ίδιο μοτίβο με το
-        # "Καμπ." στο ALL_ORDERS. Κρατάμε μόνο την πιο πρόσφατη τιμή που
-        # βρίσκεται μέσα, και τη μετατρέπουμε σε YYYYMM χρησιμοποιώντας το
-        # τρέχον έτος (δεν υπάρχει στήλη ημερομηνίας εδώ για να το εξάγουμε,
-        # αφού πρόκειται για μέλη που ΔΕΝ έχουν παραγγείλει ακόμα) — εκτός αν ο
-        # χρήστης δώσει ρητά manual_camp_code, οπότε φιλτράρουμε με βάση αυτό.
-        detected_camp_note = None
-        if col_camp:
-            camp_nums = pd.to_numeric(df_raw[col_camp], errors='coerce').dropna()
-            if not camp_nums.empty:
-                if manual_camp_code:
-                    target_num = int(str(int(manual_camp_code))[-2:])
-                    df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == target_num].copy()
-                    detected_camp_note = str(int(manual_camp_code))
-                else:
-                    latest_camp_num = int(sorted(camp_nums.unique(), reverse=True)[0])
-                    df_raw = df_raw[pd.to_numeric(df_raw[col_camp], errors='coerce') == latest_camp_num].copy()
-                    detected_camp_note = f"{date.today().year}{latest_camp_num:02d}"
-
-        out = pd.DataFrame()
-        out['Ονοματεπώνυμο'] = df_raw[col_name]
-        out['Τηλέφωνο'] = df_raw[col_phone] if col_phone else None
-        return out, None, detected_camp_note
 
     NOT_PLACED_CACHE = "not_placed_cache.csv"
 
