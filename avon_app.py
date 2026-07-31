@@ -3316,7 +3316,7 @@ try:
         ('pending',       f"⏳ Προς Τιμολόγηση ({len(df_pros_timologisi)})",         False),
         ('billed',        f"🚚 Τιμολογημένες ({len(df_billed_only)})",               False),
         ('ekkremeis',     f"📞 Εκκρεμείς ({len(df_call_list_ekkremeis)})",           True),
-        ('removals',      f"⚠️ Διαγραφές ({len(df_rem_clean)})",                    True),
+        ('removals',      ("⚠️ Διαγραφές" if is_assistant_mode else f"⚠️ Διαγραφές ({len(df_rem_clean)})"), True),
         ('good_removals', f"💎 Καλές Διαγραφές Ιστορικού ({len(df_good_past_removals)})", True),
         ('additions',     f"🎉 Additions ({len(df_winbacks)})",                     False),
         ('today',         "⭐ Σήμερα",                                              True),
@@ -3608,7 +3608,10 @@ try:
         if not df_rem_clean.empty:
             high_hope = df_rem_clean[df_rem_clean['ReturnProb'] >= 0.5]
             if not high_hope.empty:
-                st.success(f"🎯 {len(high_hope)} μέλη με **πάνω από 50% πιθανότητα** να ξαναπαραγγείλουν — ξεκίνα από αυτές.")
+                if is_assistant_mode:
+                    st.success("🎯 Μέλη με **πάνω από 50% πιθανότητα** να ξαναπαραγγείλουν — ξεκίνα από αυτές.")
+                else:
+                    st.success(f"🎯 {len(high_hope)} μέλη με **πάνω από 50% πιθανότητα** να ξαναπαραγγείλουν — ξεκίνα από αυτές.")
         render_list(df_rem_clean, "rem", show_notes=True)
 
     with tabs[tab_idx['good_removals']]:
