@@ -241,6 +241,32 @@ def get_campaign_end_date(ref_date=None):
         end -= timedelta(days=1)
     return end
 
+def get_effective_current_campaign(available_camps, grace_hour=18):
+    """
+    Καθορίζει ποια καμπάνια πρέπει να είναι η ΠΡΟΕΠΙΛΕΓΜΕΝΗ/τρέχουσα.
+    ΚΡΙΣΙΜΟ: οι παραγγελίες μπαίνουν μέχρι τις 15:00 της ημέρας κλεισίματος —
+    άρα τυπικά η ΝΕΑ καμπάνια «ξεκινάει» στις 15:01. Όμως ο πιστωτικός έλεγχος
+    της καμπάνιας που ΜΟΛΙΣ έκλεισε συνεχίζεται μέχρι τις 18:00 την ΙΔΙΑ μέρα.
+    Χωρίς αυτό το «περιθώριο χάριτος», η εφαρμογή θα «πηδούσε» αυτόματα στη
+    νέα καμπάνια στις 15:01, χάνοντας τον έλεγχο της παλιάς ενώ ακόμα τη
+    δουλεύεις. Μέχρι τις {grace_hour}:00 της ημέρας κλεισίματος, προτεραιότητα
+    δίνεται ΠΑΝΤΑ στην καμπάνια που μόλις έκλεισε.
+    """
+    now = datetime.now()
+    today = date.today()
+    for camp in available_camps:
+        try:
+            camp_str = str(int(camp))
+            camp_year, camp_month = int(camp_str[:4]), int(camp_str[4:6])
+            camp_close_date = get_campaign_end_date(ref_date=date(camp_year, camp_month, 1))
+            if camp_close_date == today:
+                grace_end = datetime.combine(today, datetime.min.time()).replace(hour=grace_hour)
+                if now < grace_end:
+                    return camp  # Ακόμα μέσα στο περιθώριο χάριτος — αυτή έχει προτεραιότητα
+        except Exception:
+            continue
+    return available_camps[0] if available_camps else None  # Προεπιλογή: η πιο πρόσφατη
+
 def parse_period_index(col_name):
     """Εξάγει sortable index από όνομα στήλης ιστορικότητας (π.χ. 'ΜΙΚΤΕΣ 202501' → 202501)"""
     col_upper = col_name.upper()
@@ -1235,12 +1261,17 @@ try:
 
     # --- SIDEBAR ---
     available_camps = sorted(df_sales_all[camp_col].unique(), reverse=True)
+    _effective_camp = get_effective_current_campaign(available_camps)
     if _is_assistant_early:
-        # Καμία διαχείριση στη βοηθό — αυτόματα η πιο πρόσφατη (τρέχουσα) καμπάνια
-        selected_camp = available_camps[0]
+        # Καμία διαχείριση στη βοηθό — αυτόματα η «σωστή» τρέχουσα καμπάνια
+        # (σέβεται το περιθώριο χάριτος μέχρι τις 18:00 της ημέρας κλεισίματος)
+        selected_camp = _effective_camp
     else:
         st.sidebar.header("🚀 Διαχείριση")
-        selected_camp = st.sidebar.selectbox("Ενεργή Καμπάνια", available_camps)
+        _default_idx = available_camps.index(_effective_camp) if _effective_camp in available_camps else 0
+        selected_camp = st.sidebar.selectbox("Ενεργή Καμπάνια", available_camps, index=_default_idx)
+        if _effective_camp != available_camps[0]:
+            st.sidebar.caption(f"ℹ️ Προεπιλογή: {_effective_camp} (περιθώριο χάριτος πιστωτικού ελέγχου μέχρι τις 18:00)")
         if st.sidebar.button("🔄 Ανανέωση Δεδομένων Τώρα", key="force_refresh",
                               help="Παρακάμπτει το cache 5 λεπτών — χρήσιμο αν μόλις ενημέρωσες το Google Sheet και θες να το δεις αμέσως."):
             fetch_sheet_data.clear()
@@ -3361,6 +3392,7 @@ try:
                             save_note(n, new_note)
                             member_notes[n] = new_note
                             st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                            st.rerun()
                 with mc2:
                     outcome_sel = st.selectbox(
                         "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
@@ -3368,6 +3400,7 @@ try:
                     )
                     if outcome_sel != "— Επίλεξε —":
                         mark_contacted(row_key, outcome=outcome_sel, display_name=r['Ονοματεπώνυμο'])
+                        st.rerun()
 
     if 'ai_advisor' in tab_idx:
         with tabs[tab_idx['ai_advisor']]:
@@ -3436,14 +3469,44 @@ try:
             elif not df_pros_timologisi.empty:
                 df_disp = df_pros_timologisi.copy()
                 df_disp['Εκτίμηση'] = df_disp.apply(lambda r: r['Ποσό_Net'] if r['Ποσό_Net'] > 0 else get_smart_value(r['NameClean'], r['Ονοματεπώνυμο']), axis=1)
-                st.dataframe(
-                    df_disp[['Ονοματεπώνυμο', 'Ποσό_Net', 'Εκτίμηση', 'Τηλέφωνο']],
-                    use_container_width=True, hide_index=True,
-                    column_config={
-                        "Εκτίμηση": st.column_config.ProgressColumn("Εκτίμηση Αξίας (€)", help="Πιθανή αξία", format="%.0f", min_value=0, max_value=600),
-                        "Ποσό_Net": st.column_config.NumberColumn("Τρέχον Ποσό (€)", format="%.2f €")
-                    }
-                )
+                pt_search = st.text_input("🔍 Αναζήτηση", key="search_pt", placeholder="Πληκτρολόγησε όνομα...")
+                if pt_search:
+                    df_disp = df_disp[df_disp['Ονοματεπώνυμο'].astype(str).str.contains(pt_search, case=False, na=False)]
+
+                for _, row in df_disp.sort_values('Εκτίμηση', ascending=False).iterrows():
+                    n = row['NameClean']
+                    pt_row_key = f"pt_{n}"
+                    if pt_row_key in st.session_state.sent_ids:
+                        continue
+                    note_text = member_notes.get(n, "")
+                    phone_raw = row.get('Τηλέφωνο')
+                    phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                    phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
+                    label = f"⏳ **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — {row['Εκτίμηση']:,.0f}€{' 📝' if note_text else ''}"
+                    with st.expander(label, expanded=False):
+                        if phone_digits:
+                            st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
+                        st.caption(f"Τρέχον Ποσό: {row['Ποσό_Net']:,.2f}€ | Εκτίμηση: {row['Εκτίμηση']:,.0f}€")
+                        if note_text:
+                            st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
+                        with st.form(key=f"note_form_pt_{n}", clear_on_submit=False, border=False):
+                            ptfc1, ptfc2 = st.columns([5, 1])
+                            new_note = ptfc1.text_input("Σημείωση:", value=note_text,
+                                                      key=f"note_pt_{n}", placeholder="π.χ. να επιβεβαιωθεί...",
+                                                      label_visibility="collapsed")
+                            pt_submitted = ptfc2.form_submit_button("💾")
+                        if pt_submitted and new_note != note_text:
+                            save_note(n, new_note)
+                            member_notes[n] = new_note
+                            st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                            st.rerun()
+                        outcome_sel_pt = st.selectbox(
+                            "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                            key=f"outcome_{pt_row_key}", label_visibility="collapsed"
+                        )
+                        if outcome_sel_pt != "— Επίλεξε —":
+                            mark_contacted(pt_row_key, outcome=outcome_sel_pt, display_name=row['Ονοματεπώνυμο'])
+                            st.rerun()
             else:
                 st.info("Καμία παραγγελία σε αναμονή στο σύστημα.")
 
@@ -3462,8 +3525,17 @@ try:
 
                 for _, row in df_billed_disp.sort_values('Ποσό_Net', ascending=False).iterrows():
                     n = row['NameClean']
-                    label = f"**{row['Ονοματεπώνυμο']}** — {row['Ποσό_Net']:,.0f}€"
+                    bl_row_key = f"bl_{n}"
+                    if bl_row_key in st.session_state.sent_ids:
+                        continue
+                    note_text = member_notes.get(n, "")
+                    phone_raw = row.get('Τηλέφωνο')
+                    phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                    phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
+                    label = f"**{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — {row['Ποσό_Net']:,.0f}€{' 📝' if note_text else ''}"
                     with st.expander(label, expanded=False):
+                        if phone_digits:
+                            st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
                         sc1, sc2, sc3 = st.columns(3)
 
                         # Ιστορικό παραγγελιών ανά καμπάνια
@@ -3507,6 +3579,27 @@ try:
                                 xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=True)
                             )
                             st.plotly_chart(fig_mini, use_container_width=True)
+
+                        if note_text:
+                            st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
+                        with st.form(key=f"note_form_bl_{n}", clear_on_submit=False, border=False):
+                            blfc1, blfc2 = st.columns([5, 1])
+                            new_note = blfc1.text_input("Σημείωση:", value=note_text,
+                                                      key=f"note_bl_{n}", placeholder="π.χ. να ευχαριστήσω για την παραγγελία...",
+                                                      label_visibility="collapsed")
+                            bl_submitted = blfc2.form_submit_button("💾")
+                        if bl_submitted and new_note != note_text:
+                            save_note(n, new_note)
+                            member_notes[n] = new_note
+                            st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                            st.rerun()
+                        outcome_sel_bl = st.selectbox(
+                            "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                            key=f"outcome_{bl_row_key}", label_visibility="collapsed"
+                        )
+                        if outcome_sel_bl != "— Επίλεξε —":
+                            mark_contacted(bl_row_key, outcome=outcome_sel_bl, display_name=row['Ονοματεπώνυμο'])
+                            st.rerun()
 
     with tabs[tab_idx['ekkremeis']]: render_list(df_call_list_ekkremeis, "todo", show_notes=True)
 
@@ -3573,6 +3666,7 @@ try:
                             save_note(n, new_note)
                             member_notes[n] = new_note
                             st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                            st.rerun()
                     with gc2:
                         row_key = f"gpr_{n}"
                         outcome_sel_gpr = st.selectbox(
@@ -3581,6 +3675,7 @@ try:
                         )
                         if outcome_sel_gpr != "— Επίλεξε —":
                             mark_contacted(row_key, outcome=outcome_sel_gpr, display_name=row['Ονοματεπώνυμο'])
+                            st.rerun()
 
     if 'additions' in tab_idx:
         with tabs[tab_idx['additions']]:
@@ -3745,6 +3840,16 @@ try:
                             save_note(n, new_note)
                             member_notes[n] = new_note
                             st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                            st.rerun()
+                        wb_row_key = f"wb_{n}"
+                        if wb_row_key not in st.session_state.sent_ids:
+                            outcome_sel_wb = st.selectbox(
+                                "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                                key=f"outcome_{wb_row_key}", label_visibility="collapsed"
+                            )
+                            if outcome_sel_wb != "— Επίλεξε —":
+                                mark_contacted(wb_row_key, outcome=outcome_sel_wb, display_name=row['Ονοματεπώνυμο'])
+                                st.rerun()
 
     with tabs[tab_idx['today']]:
         st.caption(
@@ -3835,6 +3940,7 @@ try:
                 )
                 if outcome_sel_today != "— Επίλεξε —":
                     mark_contacted(row_key, outcome=outcome_sel_today, display_name=row['Ονοματεπώνυμο'])
+                    st.rerun()
                 st.divider()
 
     if 'adjustments' in tab_idx:
@@ -3860,15 +3966,40 @@ try:
                     if adj_search:
                         df_adj_disp = df_adj_disp[df_adj_disp['Ονοματεπώνυμο'].astype(str).str.contains(adj_search, case=False, na=False)]
 
-                    st.dataframe(
-                        df_adj_disp[['Ονοματεπώνυμο', 'Ποσό_Net', 'Κατάσταση']].rename(
-                            columns={'Ποσό_Net': 'Ποσό (€)'}
-                        ),
-                        use_container_width=True, hide_index=True,
-                        column_config={
-                            "Ποσό (€)": st.column_config.NumberColumn(format="%.2f €")
-                        }
-                    )
+                    for _, row in df_adj_disp.iterrows():
+                        n = row.get('NameClean', row['Ονοματεπώνυμο'])
+                        adj_row_key = f"adj_{n}_{row.name}"
+                        if adj_row_key in st.session_state.sent_ids:
+                            continue
+                        note_text = member_notes.get(n, "")
+                        phone_raw = row.get('Τηλέφωνο')
+                        phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                        phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
+                        label = f"⚙️ **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — {row['Ποσό_Net']:,.2f}€{' 📝' if note_text else ''}"
+                        with st.expander(label, expanded=False):
+                            if phone_digits:
+                                st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
+                            st.caption(f"Κατάσταση: {row.get('Κατάσταση', '—')}")
+                            if note_text:
+                                st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
+                            with st.form(key=f"note_form_adj_{adj_row_key}", clear_on_submit=False, border=False):
+                                adjfc1, adjfc2 = st.columns([5, 1])
+                                new_note = adjfc1.text_input("Σημείωση:", value=note_text,
+                                                          key=f"note_adj_{adj_row_key}", placeholder="π.χ. λόγος διόρθωσης...",
+                                                          label_visibility="collapsed")
+                                adj_submitted = adjfc2.form_submit_button("💾")
+                            if adj_submitted and new_note != note_text:
+                                save_note(n, new_note)
+                                member_notes[n] = new_note
+                                st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                                st.rerun()
+                            outcome_sel_adj = st.selectbox(
+                                "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                                key=f"outcome_{adj_row_key}", label_visibility="collapsed"
+                            )
+                            if outcome_sel_adj != "— Επίλεξε —":
+                                mark_contacted(adj_row_key, outcome=outcome_sel_adj, display_name=row['Ονοματεπώνυμο'])
+                                st.rerun()
 
                     # Ομαδοποίηση ανά μέλος αν κάποιο έχει πάνω από 1 adjustment
                     member_adj_counts = df_adjustments.groupby('Ονοματεπώνυμο')['Ποσό_Net'].agg(['count', 'sum'])
@@ -3899,22 +4030,46 @@ try:
             df_cc_disp = df_empty_status
             if cc_search:
                 df_cc_disp = df_cc_disp[df_cc_disp['Ονοματεπώνυμο'].astype(str).str.contains(cc_search, case=False, na=False)]
+            df_cc_disp = df_cc_disp.sort_values('Ποσό_Net', ascending=False)
 
-            if is_assistant_mode:
-                st.dataframe(
-                    df_cc_disp[['Ονοματεπώνυμο', 'Τηλέφωνο']],
-                    use_container_width=True, hide_index=True
-                )
-            else:
-                st.dataframe(
-                    df_cc_disp[['Ονοματεπώνυμο', 'Ποσό_Net', 'Τηλέφωνο']].rename(
-                        columns={'Ποσό_Net': 'Ποσό (€)'}
-                    ).sort_values('Ποσό (€)', ascending=False),
-                    use_container_width=True, hide_index=True,
-                    column_config={
-                        "Ποσό (€)": st.column_config.NumberColumn(format="%.2f €")
-                    }
-                )
+            for _, row in df_cc_disp.iterrows():
+                n = row.get('NameClean', row['Ονοματεπώνυμο'])
+                cc_row_key = f"cc_{n}"
+                if cc_row_key in st.session_state.sent_ids:
+                    continue
+                note_text = member_notes.get(n, "")
+                phone_raw = row.get('Τηλέφωνο')
+                phone_digits = re.sub(r'\D', '', str(phone_raw)) if pd.notna(phone_raw) else ""
+                phone_display = str(phone_raw) if pd.notna(phone_raw) and str(phone_raw).strip() else "— χωρίς τηλέφωνο"
+                if is_assistant_mode:
+                    label = f"🏦 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display}{' 📝' if note_text else ''}"
+                else:
+                    label = f"🏦 **{row['Ονοματεπώνυμο']}** — 📞 {phone_display} — {row['Ποσό_Net']:,.2f}€{' 📝' if note_text else ''}"
+                with st.expander(label, expanded=False):
+                    if phone_digits:
+                        st.markdown(f"📞 [**{phone_display}**](tel:{phone_digits})", unsafe_allow_html=False)
+                    if not is_assistant_mode:
+                        st.caption(f"Ποσό (αν προχωρήσει): {row['Ποσό_Net']:,.2f}€")
+                    if note_text:
+                        st.markdown(f'<span class="note-badge">📝 {note_text}</span>', unsafe_allow_html=True)
+                    with st.form(key=f"note_form_cc_{n}", clear_on_submit=False, border=False):
+                        ccfc1, ccfc2 = st.columns([5, 1])
+                        new_note = ccfc1.text_input("Σημείωση:", value=note_text,
+                                                  key=f"note_cc_{n}", placeholder="π.χ. έστειλε δικαιολογητικά...",
+                                                  label_visibility="collapsed")
+                        cc_submitted = ccfc2.form_submit_button("💾")
+                    if cc_submitted and new_note != note_text:
+                        save_note(n, new_note)
+                        member_notes[n] = new_note
+                        st.toast("✅ Η σημείωση αποθηκεύτηκε", icon="✅")
+                        st.rerun()
+                    outcome_sel_cc = st.selectbox(
+                        "Αποτέλεσμα", ["— Επίλεξε —"] + CALL_OUTCOMES,
+                        key=f"outcome_{cc_row_key}", label_visibility="collapsed"
+                    )
+                    if outcome_sel_cc != "— Επίλεξε —":
+                        mark_contacted(cc_row_key, outcome=outcome_sel_cc, display_name=row['Ονοματεπώνυμο'])
+                        st.rerun()
 
     # === ΛΕΙΤΟΥΡΓΙΑ ΒΟΗΘΟΥ: σταματάμε εδώ ===
     # Ό,τι χρειάζεται η βοηθός (Διαγραφές, Additions, Πιστωτικός Έλεγχος, Smart
