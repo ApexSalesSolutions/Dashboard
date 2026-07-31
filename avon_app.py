@@ -2993,9 +2993,16 @@ try:
         col_count = 4 + (1 if goal_actives > 0 else 0) + (1 if goal_removals > 0 else 0)
         met_cols = st.columns(col_count)
         ci = 0
-        met_cols[ci].metric("💰 Πωλήσεις (Τιμολ.)", f"{total_billed_net:,.0f} €",
+        # ΚΡΙΣΙΜΟ: το Τέλος Ενεργών (0,85€ ανά ενεργό μέλος) αφαιρείται ΑΠΕΥΘΕΙΑΣ από
+        # την κάρτα "Πωλήσεις (Τιμολ.)" — υπολογίζεται εδώ (νωρίς, πριν το section
+        # προμήθειας) ειδικά για να εμφανίζεται σε αυτή την κύρια κάρτα, όχι μόνο
+        # κρυμμένο μέσα στο expander της προμήθειας.
+        _active_fee_display = unique_orders_count * 0.85
+        _sales_after_fee_display = max(0.0, total_billed_net - _active_fee_display)
+        met_cols[ci].metric("💰 Πωλήσεις (Τιμολ.)", f"{_sales_after_fee_display:,.0f} €",
             delta=f"{mom_sales_delta:+.1f}% vs ίδια μέρα" if same_day_nets or prev_camp_key else None,
-            help=f"Ιστορικό ΕΩΣ {today_day}η: {hist_same_day_net:,.0f}€" if same_day_nets else None)
+            help=(f"Μικτές τιμολογημένες: {total_billed_net:,.0f}€ − Τέλος Ενεργών ({unique_orders_count} × 0,85€ = {_active_fee_display:,.2f}€)"
+                  + (f" | Ιστορικό ΕΩΣ {today_day}η: {hist_same_day_net:,.0f}€" if same_day_nets else "")))
         ci += 1
         met_cols[ci].metric("👥 Ενεργά Άτομα", f"{unique_orders_count}" + (f" / {goal_actives}" if goal_actives > 0 else ""),
             delta=f"{mom_members_delta:+d} vs ίδια μέρα" if same_day_nets or prev_camp_key else None)
