@@ -1423,6 +1423,7 @@ try:
         goal_removals = int(saved.get("removals", 0))
         goal_stencil_growth = int(saved.get("stencil_growth", 0))
         campaign_debt = float(saved.get("debt", 0.0))
+        manual_hidden_removals = int(saved.get("hidden_removals", 0))
     else:
         st.sidebar.markdown("---")
         st.sidebar.subheader("🎯 Στόχοι Καμπάνιας")
@@ -1444,10 +1445,16 @@ try:
             value=float(saved.get("debt", 0.0)),
             help="Αφαιρείται από το σύνολο των τελικών πωλήσεων πριν τον υπολογισμό της προμήθειας. Ορατό μόνο σε σένα."
         )
+        manual_hidden_removals = st.sidebar.number_input(
+            "🕳️ Κρυφές Διαγραφές", min_value=0, step=1,
+            value=int(saved.get("hidden_removals", 0)),
+            help="Διαγραφές που δεν εμφανίζονται στην αυτόματη λίστα (Φύλλο3) — προστίθενται στο σύνολο διαγραφών παντού (τρέχον, Stencil Growth). Καταχώρησέ το μία φορά ανά καμπάνια."
+        )
 
         # Αποθήκευση αν άλλαξε κάτι
         new_saved = {"sales": goal_sales, "actives": goal_actives, "removals": goal_removals,
-                     "stencil_growth": goal_stencil_growth, "debt": campaign_debt}
+                     "stencil_growth": goal_stencil_growth, "debt": campaign_debt,
+                     "hidden_removals": manual_hidden_removals}
         if new_saved != saved:
             all_goals[camp_key_str] = new_saved
             save_goals(all_goals)
@@ -2244,15 +2251,18 @@ try:
         _removal_candidate_set = set(df_removals_raw['NameClean'].unique())
         _removal_mask = np.array([n in _removal_candidate_set for n in names_not_ordered])
         n_removal_candidates = int(_removal_mask.sum())
-        current_removal_count = n_removal_candidates
+        current_removal_count = n_removal_candidates + manual_hidden_removals
         if n_removal_candidates > 0:
             removal_returns_sim = order_decisions[:, _removal_mask].sum(axis=1)
             removal_final_sim = n_removal_candidates - removal_returns_sim
         else:
             removal_final_sim = np.zeros(n_sims)
-        removal_p25 = int(np.percentile(removal_final_sim, 25))
-        removal_p50 = int(np.percentile(removal_final_sim, 50))
-        removal_p75 = int(np.percentile(removal_final_sim, 75))
+        # ΚΡΙΣΙΜΟ: οι κρυφές διαγραφές (χειροκίνητη καταχώρηση) προστίθενται σε
+        # ΟΛΟ το εύρος της πρόβλεψης — δεν υπάρχει σενάριο όπου «επιστρέφουν»,
+        # αφού δεν εμφανίζονται καν στην αυτόματη λίστα υποψηφίων.
+        removal_p25 = int(np.percentile(removal_final_sim, 25)) + manual_hidden_removals
+        removal_p50 = int(np.percentile(removal_final_sim, 50)) + manual_hidden_removals
+        removal_p75 = int(np.percentile(removal_final_sim, 75)) + manual_hidden_removals
 
         # === BAYESIAN 3-WAY BLEND ===
         data_trust = min(0.75, time_passed_ratio * 1.1)
@@ -2366,9 +2376,10 @@ try:
         pacing_reliable = False
         # Actives: όλοι έχουν ήδη παραγγείλει, οπότε το σύνολο είναι σταθερό
         active_p25 = active_p50 = active_p75 = unique_orders_count
-        # Διαγραφές: δεν απομένουν μη-παραγγείλαντα μέλη, άρα καμία υποψήφια διαγραφή
-        removal_p25 = removal_p50 = removal_p75 = 0
-        current_removal_count = 0
+        # Διαγραφές: δεν απομένουν μη-παραγγείλαντα μέλη από την αυτόματη λίστα,
+        # αλλά προστίθενται πάντα οι χειροκίνητες «κρυφές» διαγραφές
+        removal_p25 = removal_p50 = removal_p75 = manual_hidden_removals
+        current_removal_count = manual_hidden_removals
     else:
         # Η καμπάνια όντως έκλεισε (πέρασε η ώρα 15:00 της τελευταίας ημέρας) — τελικό αποτέλεσμα
         final_forecast = total_billed_net + val_pros_timologisi * 0.95
@@ -2387,7 +2398,7 @@ try:
         # Κλειστή καμπάνια: τα νούμερα είναι πλέον ΤΕΛΙΚΑ, όχι πρόβλεψη
         active_p25 = active_p50 = active_p75 = unique_orders_count
         _removal_candidate_set = set(df_removals_raw['NameClean'].unique())
-        final_removal_count = len(_removal_candidate_set - names_with_any_order)
+        final_removal_count = len(_removal_candidate_set - names_with_any_order) + manual_hidden_removals
         current_removal_count = final_removal_count
         removal_p25 = removal_p50 = removal_p75 = final_removal_count
 
@@ -2940,15 +2951,26 @@ try:
         </div>
         """, unsafe_allow_html=True)
 
-        progress_pct = min(100.0, (total_billed_net / target_val) * 100) if target_val > 0 else 0
-        bar_color = "#d63384" if progress_pct < 80 else "#28a745"
+        # ΔΙΟΡΘΩΣΗ: το πραγματικό ποσοστό (χωρίς όριο) χρησιμοποιείται για το ΚΕΙΜΕΝΟ,
+        # ώστε να φαίνεται η υπερεπίτευξη (π.χ. 115.3%) — το πλάτος της ΜΠΑΡΑΣ όμως
+        # παραμένει καπαρισμένο στο 100% (μια μπάρα δεν μπορεί οπτικά να ξεπεράσει
+        # το container της χωρίς να "σπάσει" το layout).
+        progress_pct_actual = (total_billed_net / target_val) * 100 if target_val > 0 else 0
+        progress_pct = min(100.0, progress_pct_actual)
+        over_achieved = progress_pct_actual > 100
+        bar_color = "#ffd700" if over_achieved else ("#d63384" if progress_pct < 80 else "#28a745")
 
         # Progress bars για όλους τους στόχους
-        actives_pct   = min(100.0, unique_orders_count / max(1, goal_actives) * 100) if goal_actives > 0 else 0
+        actives_pct_actual = unique_orders_count / max(1, goal_actives) * 100 if goal_actives > 0 else 0
+        actives_pct = min(100.0, actives_pct_actual)
+        actives_over_achieved = actives_pct_actual > 100
         # Διαγραφές = μόνο όσοι από τη λίστα ΔΕΝ έχουν παραγγείλει (ίδια λογική με tab Διαγραφών)
-        curr_removals = len(df_removals_raw[~df_removals_raw['NameClean'].isin(names_with_any_order)])
+        curr_removals = len(df_removals_raw[~df_removals_raw['NameClean'].isin(names_with_any_order)]) + manual_hidden_removals
 
-        st.markdown(f"**Πρόοδος Στόχου Πωλήσεων: {progress_pct:.1f}%**")
+        sales_label = f"**Πρόοδος Στόχου Πωλήσεων: {progress_pct_actual:.1f}%**"
+        if over_achieved:
+            sales_label += f" 🎉 <span style='color:#ffd700'>(+{progress_pct_actual - 100:.1f}% πάνω από τον στόχο!)</span>"
+        st.markdown(sales_label, unsafe_allow_html=True)
         st.markdown(f"""
             <div style="width:100%;background:#333;border-radius:10px;margin-bottom:8px;">
                 <div style="width:{progress_pct}%;background:{bar_color};height:22px;border-radius:10px;"></div>
@@ -2956,8 +2978,11 @@ try:
         """, unsafe_allow_html=True)
 
         if goal_actives > 0:
-            act_color = "#28a745" if actives_pct >= 80 else "#ffc107" if actives_pct >= 50 else "#dc3545"
-            st.markdown(f"**Πρόοδος Actives: {unique_orders_count} / {goal_actives} ({actives_pct:.1f}%)**")
+            act_color = "#ffd700" if actives_over_achieved else ("#28a745" if actives_pct >= 80 else "#ffc107" if actives_pct >= 50 else "#dc3545")
+            actives_label = f"**Πρόοδος Actives: {unique_orders_count} / {goal_actives} ({actives_pct_actual:.1f}%)**"
+            if actives_over_achieved:
+                actives_label += f" 🎉 <span style='color:#ffd700'>(+{actives_pct_actual - 100:.1f}%!)</span>"
+            st.markdown(actives_label, unsafe_allow_html=True)
             st.markdown(f"""
                 <div style="width:100%;background:#333;border-radius:10px;margin-bottom:18px;">
                     <div style="width:{actives_pct}%;background:{act_color};height:14px;border-radius:10px;"></div>
@@ -3229,10 +3254,11 @@ try:
         )
 
         # === ΕΚΤΙΜΗΣΗ ΠΡΟΜΗΘΕΙΑΣ ΒΑΣΕΙ ΤΕΛΙΚΗΣ ΠΡΟΒΛΕΨΗΣ (μόνο για σένα) ===
-        # 1. Καθαρές πωλήσεις = ΤΕΛΙΚΗ ΠΡΟΒΛΕΨΗ (Ensemble AI Forecast) − χρέος καμπάνιας
+        # 1. Πραγματικές πωλήσεις = ΤΕΛΙΚΗ ΠΡΟΒΛΕΨΗ (Ensemble AI Forecast)
+        #    − χρέος καμπάνιας − (0,85€ × προβλεπόμενα ενεργά μέλη)
         #    — όχι οι τρέχουσες πωλήσεις, ώστε να βλέπεις από νωρίς πού πάει να
         #    καταλήξει η προμήθειά σου, όχι μόνο τι έχεις μαζέψει μέχρι τώρα.
-        # 2. % επίτευξης πλάνου πωλήσεων βάσει των ΚΑΘΑΡΩΝ προβλεπόμενων πωλήσεων
+        # 2. % επίτευξης πλάνου πωλήσεων βάσει των ΠΡΑΓΜΑΤΙΚΩΝ προβλεπόμενων πωλήσεων
         # 3. Υπολογίζονται ΚΑΙ οι δύο πίνακες ταυτόχρονα (όχι μόνο ο "τρέχων"),
         #    ώστε να βλέπεις ξεκάθαρα το «διακύβευμα» του στόχου Stencil Growth.
         # 4. +300€ μπόνους αν η ΠΡΟΒΛΕΨΗ ενεργών μελών (active_p50) πιάνει τον στόχο
@@ -3249,16 +3275,19 @@ try:
                 elif pct >= 95: return 0.04
                 else: return 0.035
 
+        ACTIVE_MEMBER_FEE = 0.85  # € αφαιρούμενα ανά ενεργό μέλος από τις πραγματικές πωλήσεις
+        active_member_fee_total = active_p50 * ACTIVE_MEMBER_FEE
         net_sales_forecast_after_debt = max(0.0, final_forecast - campaign_debt)
-        achievement_pct_forecast = (net_sales_forecast_after_debt / goal_sales * 100) if goal_sales > 0 else 0.0
+        real_sales_forecast = max(0.0, net_sales_forecast_after_debt - active_member_fee_total)
+        achievement_pct_forecast = (real_sales_forecast / goal_sales * 100) if goal_sales > 0 else 0.0
 
         actives_achieved_forecast = goal_actives > 0 and active_p50 >= goal_actives
         actives_bonus = 300.0 if actives_achieved_forecast else 0.0
 
         commission_pct_t1 = get_commission_pct(achievement_pct_forecast, 1)
         commission_pct_t2 = get_commission_pct(achievement_pct_forecast, 2)
-        commission_base_t1 = net_sales_forecast_after_debt * commission_pct_t1
-        commission_base_t2 = net_sales_forecast_after_debt * commission_pct_t2
+        commission_base_t1 = real_sales_forecast * commission_pct_t1
+        commission_base_t2 = real_sales_forecast * commission_pct_t2
         commission_final_t1 = (commission_base_t1 + actives_bonus) * 1.24
         commission_final_t2 = (commission_base_t2 + actives_bonus) * 1.24
 
@@ -3268,7 +3297,9 @@ try:
             pc1, pc2 = st.columns(2)
             pc1.metric("📊 Τελική Πρόβλεψη Πωλήσεων", f"{final_forecast:,.0f} €")
             pc2.metric("💳 Χρέος Καμπάνιας", f"-{campaign_debt:,.0f} €")
-            st.metric("🧮 Καθαρή Προβλεπόμενη Πωλήσεις (μετά χρέους)", f"{net_sales_forecast_after_debt:,.0f} €",
+            pc3, pc4 = st.columns(2)
+            pc3.metric(f"👥 Τέλος Ενεργών ({active_p50} × 0,85€)", f"-{active_member_fee_total:,.2f} €")
+            pc4.metric("🧮 Πραγματικές Πωλήσεις", f"{real_sales_forecast:,.0f} €",
                       delta=f"{achievement_pct_forecast:.1f}% του πλάνου")
             if actives_achieved_forecast:
                 st.success(f"✅ Η πρόβλεψη ενεργών μελών ({active_p50}) πιάνει τον στόχο ({goal_actives}) — μπόνους +300€")
