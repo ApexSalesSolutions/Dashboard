@@ -1319,6 +1319,18 @@ if _url_simple_mode:
 
     # === Βοηθητική συνάρτηση εμφάνισης καρτών ανά μέλος (κοινή για όλα τα tabs) ===
     def render_simple_card(df, prefix, show_amount=True, note_placeholder="π.χ. σημείωση..."):
+        # ΚΡΙΣΙΜΟ: αν ένα άτομο έχει πολλαπλές γραμμές (π.χ. 2 ξεχωριστές
+        # παραγγελίες), ομαδοποιούμε ΠΡΩΤΑ ανά όνομα — αλλιώς δημιουργούνται
+        # δύο κάρτες με το ΙΔΙΟ key, και το Streamlit σκάει με
+        # "duplicate form key". Ένα άτομο = μία κάρτα, με το ΣΥΝΟΛΟ του ποσού.
+        if not df.empty and df['Ονοματεπώνυμο'].duplicated().any():
+            agg = {'Τηλέφωνο': 'first'}
+            if 'Ποσό_Net' in df.columns:
+                agg['Ποσό_Net'] = 'sum'
+            if 'Κατάσταση' in df.columns:
+                agg['Κατάσταση'] = 'first'
+            df = df.groupby('Ονοματεπώνυμο', as_index=False).agg(agg)
+
         for _, row in df.iterrows():
             name = row['Ονοματεπώνυμο']
             row_key = f"{prefix}_{name}"
