@@ -3318,7 +3318,12 @@ try:
         # ώστε να φαίνεται η υπερεπίτευξη (π.χ. 115.3%) — το πλάτος της ΜΠΑΡΑΣ όμως
         # παραμένει καπαρισμένο στο 100% (μια μπάρα δεν μπορεί οπτικά να ξεπεράσει
         # το container της χωρίς να "σπάσει" το layout).
-        progress_pct_actual = (total_billed_net / target_val) * 100 if target_val > 0 else 0
+        # ΚΡΙΣΙΜΟ: χρησιμοποιεί το ΙΔΙΟ ποσό (μετά την αφαίρεση Τέλους Ενεργών) με
+        # την κάρτα "Πωλήσεις (Τιμολ.)" παραπάνω, ώστε η πρόοδος του στόχου να
+        # συμβαδίζει ακριβώς με αυτό που βλέπεις εκεί.
+        _active_fee_display = unique_orders_count * 0.85
+        _sales_after_fee_display = max(0.0, total_billed_net - _active_fee_display)
+        progress_pct_actual = (_sales_after_fee_display / target_val) * 100 if target_val > 0 else 0
         progress_pct = min(100.0, progress_pct_actual)
         over_achieved = progress_pct_actual > 100
         bar_color = "#ffd700" if over_achieved else ("#d63384" if progress_pct < 80 else "#28a745")
@@ -3356,12 +3361,9 @@ try:
         col_count = 4 + (1 if goal_actives > 0 else 0) + (1 if goal_removals > 0 else 0)
         met_cols = st.columns(col_count)
         ci = 0
-        # ΚΡΙΣΙΜΟ: το Τέλος Ενεργών (0,85€ ανά ενεργό μέλος) αφαιρείται ΑΠΕΥΘΕΙΑΣ από
-        # την κάρτα "Πωλήσεις (Τιμολ.)" — υπολογίζεται εδώ (νωρίς, πριν το section
-        # προμήθειας) ειδικά για να εμφανίζεται σε αυτή την κύρια κάρτα, όχι μόνο
-        # κρυμμένο μέσα στο expander της προμήθειας.
-        _active_fee_display = unique_orders_count * 0.85
-        _sales_after_fee_display = max(0.0, total_billed_net - _active_fee_display)
+        # Το Τέλος Ενεργών (_active_fee_display / _sales_after_fee_display) υπολογίστηκε
+        # ήδη παραπάνω, πριν το progress bar — επαναχρησιμοποιείται εδώ ώστε η κάρτα
+        # και η πρόοδος στόχου να δείχνουν ΠΑΝΤΑ το ίδιο ακριβώς ποσό.
         met_cols[ci].metric("💰 Πωλήσεις (Τιμολ.)", f"{_sales_after_fee_display:,.0f} €",
             delta=f"{mom_sales_delta:+.1f}% vs ίδια μέρα" if same_day_nets or prev_camp_key else None,
             help=(f"Μικτές τιμολογημένες: {total_billed_net:,.0f}€ − Τέλος Ενεργών ({unique_orders_count} × 0,85€ = {_active_fee_display:,.2f}€)"
