@@ -3253,15 +3253,14 @@ try:
             unsafe_allow_html=True
         )
 
-        # === ΕΚΤΙΜΗΣΗ ΠΡΟΜΗΘΕΙΑΣ ΒΑΣΕΙ ΤΕΛΙΚΗΣ ΠΡΟΒΛΕΨΗΣ (μόνο για σένα) ===
-        # 1. Πραγματικές πωλήσεις = ΤΕΛΙΚΗ ΠΡΟΒΛΕΨΗ (Ensemble AI Forecast)
-        #    − χρέος καμπάνιας − (0,85€ × προβλεπόμενα ενεργά μέλη)
-        #    — όχι οι τρέχουσες πωλήσεις, ώστε να βλέπεις από νωρίς πού πάει να
-        #    καταλήξει η προμήθειά σου, όχι μόνο τι έχεις μαζέψει μέχρι τώρα.
-        # 2. % επίτευξης πλάνου πωλήσεων βάσει των ΠΡΑΓΜΑΤΙΚΩΝ προβλεπόμενων πωλήσεων
+        # === ΕΚΤΙΜΗΣΗ ΠΡΟΜΗΘΕΙΑΣ ΒΑΣΕΙ ΠΡΑΓΜΑΤΙΚΩΝ ΠΩΛΗΣΕΩΝ (μόνο για σένα) ===
+        # 1. Πραγματικές πωλήσεις = ΤΡΕΧΟΥΣΕΣ ΤΙΜΟΛΟΓΗΜΕΝΕΣ ΠΩΛΗΣΕΙΣ (total_billed_net —
+        #    η ίδια τιμή με την κάρτα "💰 Πωλήσεις (Τιμολ.)" στην κορυφή)
+        #    − χρέος καμπάνιας − (0,85€ × τρέχοντα ενεργά μέλη)
+        # 2. % επίτευξης πλάνου πωλήσεων βάσει των ΠΡΑΓΜΑΤΙΚΩΝ πωλήσεων
         # 3. Υπολογίζονται ΚΑΙ οι δύο πίνακες ταυτόχρονα (όχι μόνο ο "τρέχων"),
         #    ώστε να βλέπεις ξεκάθαρα το «διακύβευμα» του στόχου Stencil Growth.
-        # 4. +300€ μπόνους αν η ΠΡΟΒΛΕΨΗ ενεργών μελών (active_p50) πιάνει τον στόχο
+        # 4. +300€ μπόνους αν τα ΤΡΕΧΟΝΤΑ ενεργά μέλη πιάνουν τον στόχο
         # 5. +24% ΦΠΑ στο τελικό άθροισμα (προμήθεια + μπόνους) — και στους δύο πίνακες
         def get_commission_pct(pct, table_num):
             if table_num == 1:
@@ -3276,35 +3275,35 @@ try:
                 else: return 0.035
 
         ACTIVE_MEMBER_FEE = 0.85  # € αφαιρούμενα ανά ενεργό μέλος από τις πραγματικές πωλήσεις
-        active_member_fee_total = active_p50 * ACTIVE_MEMBER_FEE
-        net_sales_forecast_after_debt = max(0.0, final_forecast - campaign_debt)
-        real_sales_forecast = max(0.0, net_sales_forecast_after_debt - active_member_fee_total)
-        achievement_pct_forecast = (real_sales_forecast / goal_sales * 100) if goal_sales > 0 else 0.0
+        active_member_fee_total = unique_orders_count * ACTIVE_MEMBER_FEE
+        net_sales_after_debt = max(0.0, total_billed_net - campaign_debt)
+        real_sales = max(0.0, net_sales_after_debt - active_member_fee_total)
+        achievement_pct_actual = (real_sales / goal_sales * 100) if goal_sales > 0 else 0.0
 
-        actives_achieved_forecast = goal_actives > 0 and active_p50 >= goal_actives
-        actives_bonus = 300.0 if actives_achieved_forecast else 0.0
+        actives_achieved_now = goal_actives > 0 and unique_orders_count >= goal_actives
+        actives_bonus = 300.0 if actives_achieved_now else 0.0
 
-        commission_pct_t1 = get_commission_pct(achievement_pct_forecast, 1)
-        commission_pct_t2 = get_commission_pct(achievement_pct_forecast, 2)
-        commission_base_t1 = real_sales_forecast * commission_pct_t1
-        commission_base_t2 = real_sales_forecast * commission_pct_t2
+        commission_pct_t1 = get_commission_pct(achievement_pct_actual, 1)
+        commission_pct_t2 = get_commission_pct(achievement_pct_actual, 2)
+        commission_base_t1 = real_sales * commission_pct_t1
+        commission_base_t2 = real_sales * commission_pct_t2
         commission_final_t1 = (commission_base_t1 + actives_bonus) * 1.24
         commission_final_t2 = (commission_base_t2 + actives_bonus) * 1.24
 
-        stencil_achieved_forecast = stencil_growth_forecast >= goal_stencil_growth
+        stencil_achieved_forecast = stencil_growth_now >= goal_stencil_growth
 
-        with st.expander("💼 Εκτίμηση Προμήθειας (βάσει τελικής πρόβλεψης)", expanded=False):
+        with st.expander("💼 Εκτίμηση Προμήθειας (βάσει πραγματικών πωλήσεων)", expanded=False):
             pc1, pc2 = st.columns(2)
-            pc1.metric("📊 Τελική Πρόβλεψη Πωλήσεων", f"{final_forecast:,.0f} €")
+            pc1.metric("💰 Πωλήσεις (Τιμολ.)", f"{total_billed_net:,.0f} €")
             pc2.metric("💳 Χρέος Καμπάνιας", f"-{campaign_debt:,.0f} €")
             pc3, pc4 = st.columns(2)
-            pc3.metric(f"👥 Τέλος Ενεργών ({active_p50} × 0,85€)", f"-{active_member_fee_total:,.2f} €")
-            pc4.metric("🧮 Πραγματικές Πωλήσεις", f"{real_sales_forecast:,.0f} €",
-                      delta=f"{achievement_pct_forecast:.1f}% του πλάνου")
-            if actives_achieved_forecast:
-                st.success(f"✅ Η πρόβλεψη ενεργών μελών ({active_p50}) πιάνει τον στόχο ({goal_actives}) — μπόνους +300€")
+            pc3.metric(f"👥 Τέλος Ενεργών ({unique_orders_count} × 0,85€)", f"-{active_member_fee_total:,.2f} €")
+            pc4.metric("🧮 Πραγματικές Πωλήσεις", f"{real_sales:,.0f} €",
+                      delta=f"{achievement_pct_actual:.1f}% του πλάνου")
+            if actives_achieved_now:
+                st.success(f"✅ Τα ενεργά μέλη ({unique_orders_count}) πιάνουν τον στόχο ({goal_actives}) — μπόνους +300€")
             else:
-                st.caption(f"ℹ️ Πρόβλεψη ενεργών μελών: {active_p50} | Στόχος: {goal_actives} — χωρίς μπόνους ενεργών προς το παρόν")
+                st.caption(f"ℹ️ Τρέχοντα ενεργά μέλη: {unique_orders_count} | Στόχος: {goal_actives} — χωρίς μπόνους ενεργών προς το παρόν")
 
             st.markdown("---")
             tb1, tb2 = st.columns(2)
@@ -3334,7 +3333,7 @@ try:
                 )
             st.caption(f"💡 Διαφορά αν πιάσεις το Stencil Growth: **+{commission_final_t1 - commission_final_t2:,.2f}€**")
             if not is_closed:
-                st.caption("ℹ️ Υπολογισμένο με βάση την τρέχουσα AI πρόβλεψη — θα αλλάζει καθώς εξελίσσεται η καμπάνια, και θα οριστικοποιηθεί στο κλείσιμο.")
+                st.caption("ℹ️ Υπολογισμένο με τις **τρέχουσες τιμολογημένες πωλήσεις** — θα αυξάνεται καθώς μπαίνουν νέες παραγγελίες, και θα οριστικοποιηθεί στο κλείσιμο.")
 
     # === Δυναμική λίστα tabs — στη Λειτουργία Βοηθού, τα μη-διαθέσιμα tabs
     # (AI Advisor, Προς Τιμολόγηση, Τιμολογημένες, Additions, Adjustments) ΔΕΝ
