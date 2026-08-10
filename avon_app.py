@@ -28,7 +28,7 @@ except ImportError:
 # ==========================================
 # 1. CONFIG & UI STYLING
 # ==========================================
-st.set_page_config(page_title="Avon Strategic AI v800 (Machine Learning Edition)", layout="wide")
+st.set_page_config(page_title="Avon Strategic AI v800 (Machine Learning Edition)", layout="wide", initial_sidebar_state="collapsed")
 
 # Πρόωρος έλεγχος λειτουργίας βοηθού — χρειάζεται εδώ, πριν καν το κύριο CSS,
 # ειδικά για να βάλει λευκά γράμματα στο sidebar της βοηθού.
@@ -851,9 +851,9 @@ def clean_duplicate_columns(df):
 
 def read_avon_export_file(uploaded_file):
     """
-    Διαβάζει raw αρχείο export από την Avon (.xls παλιού τύπου ή .xlsx),
-    δοκιμάζοντας πολλαπλές μεθόδους ανάγνωσης — κάποια web reports
-    αποθηκεύονται ως HTML πίνακας με επέκταση .xls.
+    Διαβάζει raw αρχείο export από την Avon — .xls παλιού τύπου, .xlsx, CSV,
+    ή ακόμα και CSV που έχει μετονομαστεί σε .xls (συχνό όταν το report της
+    Avon κατεβαίνει ως CSV) — δοκιμάζοντας πολλαπλές μεθόδους ανάγνωσης.
     """
     raw_bytes = uploaded_file.getvalue()
     for engine in ('xlrd', 'openpyxl', 'calamine'):
@@ -861,6 +861,18 @@ def read_avon_export_file(uploaded_file):
             return pd.read_excel(BytesIO(raw_bytes), engine=engine)
         except Exception:
             continue
+    # === CSV fallback ===
+    # Δοκιμάζει τους πιο συνηθισμένους συνδυασμούς encoding/διαχωριστικού για
+    # ελληνικά CSV exports — καλύπτει και την περίπτωση που ο χρήστης το
+    # ανεβάζει με επέκταση .xls ενώ το περιεχόμενο είναι στην πραγματικότητα CSV.
+    for encoding in ('utf-8-sig', 'utf-8', 'windows-1253', 'iso-8859-7'):
+        for sep in (',', ';', '\t'):
+            try:
+                df_csv = pd.read_csv(BytesIO(raw_bytes), encoding=encoding, sep=sep)
+                if df_csv.shape[1] > 1:  # sanity: σωστό διαχωριστικό βρήκε πάνω από 1 στήλη
+                    return df_csv
+            except Exception:
+                continue
     try:
         tables = pd.read_html(BytesIO(raw_bytes))
         if tables:
@@ -1166,8 +1178,8 @@ if _url_simple_mode:
 
     # === SIDEBAR: Upload αρχείων ===
     st.sidebar.header("📤 Ανέβασμα Αρχείων")
-    su_orders = st.sidebar.file_uploader("📦 ALL_ORDERS", type=['xls', 'xlsx'], key="su_orders")
-    su_notplaced = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER", type=['xls', 'xlsx'], key="su_notplaced")
+    su_orders = st.sidebar.file_uploader("📦 ALL_ORDERS", type=['xls', 'xlsx', 'csv'], key="su_orders")
+    su_notplaced = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER", type=['xls', 'xlsx', 'csv'], key="su_notplaced")
 
     # === SIDEBAR: Στόχοι — ίδια φιλοσοφία με την κύρια εφαρμογή ===
     st.sidebar.markdown("---")
@@ -1499,8 +1511,8 @@ try:
         up_all_orders = None
         up_not_placed = None
     else:
-        up_all_orders = st.sidebar.file_uploader("📦 ALL_ORDERS (→ Φύλλο1)", type=['xls', 'xlsx'], key="up_all_orders")
-        up_not_placed = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER (→ Φύλλο2)", type=['xls', 'xlsx'], key="up_not_placed")
+        up_all_orders = st.sidebar.file_uploader("📦 ALL_ORDERS (→ Φύλλο1)", type=['xls', 'xlsx', 'csv'], key="up_all_orders")
+        up_not_placed = st.sidebar.file_uploader("📋 NOT_PLACED_AN_ORDER (→ Φύλλο2)", type=['xls', 'xlsx', 'csv'], key="up_not_placed")
 
     # === ΜΟΝΙΜΗ ΑΠΟΘΗΚΕΥΣΗ ΑΝΕΒΑΣΜΕΝΩΝ ΔΕΔΟΜΕΝΩΝ ===
     # ΚΡΙΣΙΜΟ: το st.file_uploader είναι ΠΡΟΣΩΡΙΝΟ — υπάρχει μόνο όσο είναι
