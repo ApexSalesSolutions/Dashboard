@@ -147,23 +147,26 @@ st.markdown("""
 
     /* === TABLET (601px–1024px) — σειρές με πολλά μικρά κουτάκια (π.χ. 6 metrics
        στην κορυφή: Πωλήσεις/Ενεργά/Προς Τιμολόγηση/AI Forecast/Gap/Διαγραφές)
-       στριμώχνονταν όλα σε ΜΙΑ γραμμή, πολύ στενά για να διαβαστούν άνετα.
-       Τώρα «σπάνε» σε πλέγμα 2-3 ανά γραμμή, με αναπροσαρμογή στο επόμενο.
-       ΣΗΜΕΙΩΣΗ: στοχεύουμε ΚΑΘΕ άμεσο div-παιδί (όχι συγκεκριμένο data-testid
-       στο ίδιο το column-wrapper), γιατί αυτό το εσωτερικό όνομα αλλάζει
-       μεταξύ εκδόσεων Streamlit — το γενικό selector είναι πιο ανθεκτικό. === */
+       στριμώχνονταν όλα σε ΜΙΑ γραμμή, τόσο στενά που έκοβε το κείμενο.
+       ΔΙΟΡΘΩΣΗ: το flex-wrap δεν έπιανε — το Streamlit φαίνεται να χρησιμοποιεί
+       CSS Grid (όχι flexbox) για τις γραμμές στηλών, οπότε επιβάλλουμε ρητά
+       CSS Grid με ΣΤΑΘΕΡΟ αριθμό στηλών (3), που αναγκάζει «σπάσιμο» σε νέες
+       γραμμές αντί να συνθλίβει τα πάντα σε μία. === */
     @media (min-width: 601px) and (max-width: 1024px) {
         div[data-testid="stHorizontalBlock"] {
-            flex-wrap: wrap !important;
-            row-gap: 12px !important;
+            display: grid !important;
+            grid-template-columns: repeat(3, 1fr) !important;
+            gap: 12px !important;
+            width: 100% !important;
         }
         div[data-testid="stHorizontalBlock"] > div {
-            flex: 1 1 30% !important;
-            min-width: 190px !important;
-            width: auto !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            flex: none !important;
         }
-        [data-testid="stMetricValue"] { font-size: 22px !important; }
-        [data-testid="stMetric"] { padding: 14px !important; }
+        [data-testid="stMetricValue"] { font-size: 20px !important; overflow: visible !important; white-space: normal !important; }
+        [data-testid="stMetricLabel"] { font-size: 11px !important; overflow: visible !important; white-space: normal !important; }
+        [data-testid="stMetric"] { padding: 12px !important; }
     }
 
     /* === Μεγαλύτεροι στόχοι αγγίγματος και σε tablet — πιο εύκολο άγγιγμα === */
