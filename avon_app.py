@@ -120,6 +120,30 @@ st.markdown("""
         font-size: 1.1em; font-weight: 800; color: #000; margin-bottom: 18px;
     }
     @keyframes shine { to { background-position: 200% center; } }
+
+    /* === ΚΙΝΗΤΟ / TABLET — τα custom HTML panels (Stencil Growth, προμήθεια,
+       team health κλπ) έχουν σταθερά μεγέθη γραμματοσειράς σε px, που σε στενές
+       οθόνες είναι δυσανάλογα μεγάλα και σπρώχνουν το κείμενο εκτός οθόνης.
+       Μικραίνουν αυτόματα κάτω από 600px πλάτος. === */
+    @media (max-width: 600px) {
+        [data-testid="stMetricValue"] { font-size: 22px !important; }
+        .stApp div[style*="font-size:26px"] { font-size: 20px !important; }
+        .stApp div[style*="font-size:24px"] { font-size: 19px !important; }
+        .stApp div[style*="font-size:22px"] { font-size: 18px !important; }
+        .stApp div[style*="font-size:28px"] { font-size: 21px !important; }
+        .stApp div[style*="padding:14px 18px"] { padding: 10px 12px !important; }
+        .stApp div[style*="padding:12px 16px"] { padding: 9px 12px !important; }
+        .near-target-banner { font-size: 0.95em !important; padding: 12px !important; }
+        /* Λιγότερο πλαϊνό περιθώριο στο κυρίως περιεχόμενο — πιο πολύτιμος χώρος σε στενή οθόνη */
+        .block-container { padding-left: 0.8rem !important; padding-right: 0.8rem !important; }
+    }
+
+    /* === Μεγαλύτεροι στόχοι αγγίγματος σε κινητό — dropdowns/κουμπιά πιο εύκολα
+       στο άγγιγμα με το δάχτυλο αντί για ακριβές κλικ ποντικιού === */
+    @media (max-width: 600px) {
+        [data-baseweb="select"] { min-height: 44px !important; }
+        .stButton button, .stFormSubmitButton button { min-height: 42px !important; }
+    }
     </style>
     """, unsafe_allow_html=True)
 
