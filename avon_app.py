@@ -148,15 +148,19 @@ st.markdown("""
     /* === TABLET (601px–1024px) — σειρές με πολλά μικρά κουτάκια (π.χ. 6 metrics
        στην κορυφή: Πωλήσεις/Ενεργά/Προς Τιμολόγηση/AI Forecast/Gap/Διαγραφές)
        στριμώχνονταν όλα σε ΜΙΑ γραμμή, πολύ στενά για να διαβαστούν άνετα.
-       Τώρα «σπάνε» σε πλέγμα 2-3 ανά γραμμή, με αναπροσαρμογή στο επόμενο. === */
+       Τώρα «σπάνε» σε πλέγμα 2-3 ανά γραμμή, με αναπροσαρμογή στο επόμενο.
+       ΣΗΜΕΙΩΣΗ: στοχεύουμε ΚΑΘΕ άμεσο div-παιδί (όχι συγκεκριμένο data-testid
+       στο ίδιο το column-wrapper), γιατί αυτό το εσωτερικό όνομα αλλάζει
+       μεταξύ εκδόσεων Streamlit — το γενικό selector είναι πιο ανθεκτικό. === */
     @media (min-width: 601px) and (max-width: 1024px) {
-        [data-testid="stHorizontalBlock"] {
+        div[data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important;
             row-gap: 12px !important;
         }
-        [data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+        div[data-testid="stHorizontalBlock"] > div {
             flex: 1 1 30% !important;
             min-width: 190px !important;
+            width: auto !important;
         }
         [data-testid="stMetricValue"] { font-size: 22px !important; }
         [data-testid="stMetric"] { padding: 14px !important; }
