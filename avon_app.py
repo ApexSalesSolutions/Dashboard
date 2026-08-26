@@ -4381,12 +4381,12 @@ try:
                             last_active = max(entry_periods)
                             absence_len = (len(historical_camps) - 1) - last_active
                             if absence_len < MIN_ABSENCE_STREAK:
-                                reason = f"Απουσία μόνο {absence_len} < {MIN_ABSENCE_STREAK}"
+                                reason = f"❌ Απουσία μόνο {absence_len} < {MIN_ABSENCE_STREAK}"
                             else:
                                 is_billed = n in real_billed_names
                                 is_pending = n in pros_timologisi_names
                                 if not (is_billed or is_pending):
-                                    reason = "Δεν είναι ούτε billed ούτε pending"
+                                    reason = "❌ Δεν είναι ούτε billed ούτε pending"
                                 else:
                                     curr_val = 0.0
                                     if is_billed:
@@ -4395,15 +4395,42 @@ try:
                                     if curr_val <= 0 and is_pending:
                                         p_row = df_pros_timologisi[df_pros_timologisi['NameClean'] == n]
                                         curr_val = p_row['Ποσό_Net'].sum() if not p_row.empty else 0.0
-                                    reason = "✅ ΠΕΡΝΑΕΙ" if curr_val > 0 else f"curr_val={curr_val} (≤0)"
+                                    reason = "✅ ΠΕΡΝΑΕΙ" if curr_val > 0 else f"❌ curr_val={curr_val} (≤0)"
                         orig = df_members_raw[df_members_raw['NameClean'] == n]['Ονοματεπώνυμο']
                         orig = orig.iloc[0] if not orig.empty else n
                         diag_rows.append({'Όνομα': orig, 'Απουσία': absence_len, 'Λόγος': reason})
 
                     df_diag = pd.DataFrame(diag_rows)
-                    # Δείξε μόνο όσα έχουν τουλάχιστον κάποιο ιστορικό (πιο σχετικά για debug)
-                    df_diag_relevant = df_diag[df_diag['Απουσία'].notna()].sort_values('Απουσία', ascending=False)
+                    # Μόνο όσα έχουν τουλάχιστον κάποιο ιστορικό (πιο σχετικά για debug),
+                    # ταξινομημένα ώστε οι ΑΠΟΤΥΧΙΕΣ (❌) να εμφανίζονται ΠΡΩΤΕΣ — έτσι δεν
+                    # χρειάζεται να σκανάρεις όλη τη λίστα για να βρεις τη μία εξαίρεση.
+                    df_diag_relevant = df_diag[df_diag['Απουσία'].notna()].copy()
+                    df_diag_relevant['_fails'] = ~df_diag_relevant['Λόγος'].str.startswith('✅')
+                    df_diag_relevant = df_diag_relevant.sort_values(
+                        ['_fails', 'Απουσία'], ascending=[False, False]
+                    ).drop(columns='_fails')
+                    n_failing = int((~df_diag['Απουσία'].isna() & df_diag['Λόγος'].str.startswith('❌')).sum())
+                    if n_failing > 0:
+                        st.warning(f"⚠️ {n_failing} μέλη με ιστορικό απουσίας ΔΕΝ πέρασαν στα Additions — δες τους λόγους στην κορυφή του πίνακα.")
                     st.dataframe(df_diag_relevant, use_container_width=True, hide_index=True)
+
+                    # === Έλεγχος για "αόρατα" μέλη: έχουν παραγγελία ΚΑΠΟΥ στο df_curr
+                    # (τρέχουσα καμπάνια) αλλά ΔΕΝ αναγνωρίστηκαν καν ως billed/pending —
+                    # π.χ. λόγω ασυνήθιστου κειμένου κατάστασης. Αυτοί δεν εμφανίζονται
+                    # ΚΑΘΟΛΟΥ στον παραπάνω πίνακα, γι' αυτό ελέγχονται ξεχωριστά εδώ.
+                    _all_curr_names = set(df_curr['NameClean'].unique())
+                    _invisible_names = _all_curr_names - names_with_any_order
+                    _invisible_with_history = [n for n in _invisible_names if history_detailed.get(n)]
+                    if _invisible_with_history:
+                        st.error(
+                            f"🚨 {len(_invisible_with_history)} μέλη έχουν γραμμή στην τρέχουσα καμπάνια ΚΑΙ ιστορικό, "
+                            f"αλλά δεν αναγνωρίστηκαν ως 'Τιμολογημένη' ή 'Προς Τιμολόγηση' (πιθανώς ασυνήθιστο κείμενο κατάστασης):"
+                        )
+                        for _inv_n in _invisible_with_history:
+                            _inv_orig = df_members_raw[df_members_raw['NameClean'] == _inv_n]['Ονοματεπώνυμο']
+                            _inv_orig = _inv_orig.iloc[0] if not _inv_orig.empty else _inv_n
+                            _inv_statuses = df_curr[df_curr['NameClean'] == _inv_n][status_col].unique().tolist()
+                            st.write(f"  • **{_inv_orig}** — κατάσταση(εις) στο αρχείο: {_inv_statuses}")
 
             if df_winbacks.empty:
                 st.info("Δεν εντοπίστηκαν επανατοποθετήσεις σε αυτή την καμπάνια (ή δεν υπάρχουν αρκετές ιστορικές καμπάνιες για σύγκριση).")
