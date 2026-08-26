@@ -3883,6 +3883,44 @@ try:
             if not is_closed:
                 st.caption("ℹ️ Υπολογισμένο με τις **τρέχουσες τιμολογημένες πωλήσεις** — θα αυξάνεται καθώς μπαίνουν νέες παραγγελίες, και θα οριστικοποιηθεί στο κλείσιμο.")
 
+    # === Δυναμικός μετρητής "τι απομένει" — όχι το ακατέργαστο μέγεθος ===
+    # Πριν, ο αριθμός στην παρένθεση κάθε tab (π.χ. "Προς Τιμολόγηση (7)")
+    # έδειχνε πάντα το ΣΥΝΟΛΟ των δεδομένων, ακόμα κι αφού κάποιο άτομο είχε
+    # ήδη τσεκαριστεί (✓Ok/dropdown) και εξαφανιστεί από τη λίστα. Οι
+    # παρακάτω βοηθητικές συναρτήσεις μετρούν πόσες γραμμές/άτομα ΔΕΝ έχουν
+    # ήδη καταχωρηθεί σήμερα (st.session_state.sent_ids), ώστε ο αριθμός να
+    # συμβαδίζει πάντα με ό,τι πραγματικά βλέπεις στη λίστα.
+    def _remaining_by_name(df, prefix, name_col='NameClean'):
+        if df is None or df.empty:
+            return 0
+        col = name_col if name_col in df.columns else 'Ονοματεπώνυμο'
+        names = df[col].unique()
+        return sum(1 for n in names if f"{prefix}_{n}" not in st.session_state.sent_ids)
+
+    def _remaining_by_index(df, prefix):
+        if df is None or df.empty:
+            return 0
+        return sum(1 for idx in df.index if f"{prefix}_{idx}" not in st.session_state.sent_ids)
+
+    def _remaining_adjustments(df):
+        if df is None or df.empty:
+            return 0
+        count = 0
+        for idx, row in df.iterrows():
+            n = row.get('NameClean', row['Ονοματεπώνυμο'])
+            if f"adj_{n}_{idx}" not in st.session_state.sent_ids:
+                count += 1
+        return count
+
+    _cnt_pending = _remaining_by_name(df_pros_timologisi, 'pt')
+    _cnt_billed = _remaining_by_name(df_billed_only, 'bl')
+    _cnt_ekkremeis = _remaining_by_index(df_call_list_ekkremeis, 'todo')
+    _cnt_removals = _remaining_by_index(df_rem_clean, 'rem')
+    _cnt_good_removals = _remaining_by_name(df_good_past_removals, 'gpr')
+    _cnt_additions = _remaining_by_name(df_winbacks, 'wb')
+    _cnt_adjustments = _remaining_adjustments(df_adjustments)
+    _cnt_credit_check = _remaining_by_name(df_empty_status, 'cc')
+
     # === Δυναμική λίστα tabs — στη Λειτουργία Βοηθού, τα μη-διαθέσιμα tabs
     # (AI Advisor, Προς Τιμολόγηση, Τιμολογημένες, Additions, Adjustments) ΔΕΝ
     # εμφανίζονται καν στη μπάρα — όχι απλώς "κλειδωμένα" μέσα τους. Το tab_idx
@@ -3891,15 +3929,15 @@ try:
     _tab_defs = [
         ('ai_advisor',    "🧠 AI Advisor & Analytics",                              False),
         ('smart_rank',    "🔥 Smart Rank",                                          True),
-        ('pending',       f"⏳ Προς Τιμολόγηση ({len(df_pros_timologisi)})",         False),
-        ('billed',        f"🚚 Τιμολογημένες ({len(df_billed_only)})",               False),
-        ('ekkremeis',     f"📞 Εκκρεμείς ({len(df_call_list_ekkremeis)})",           True),
-        ('removals',      ("⚠️ Διαγραφές" if is_assistant_mode else f"⚠️ Διαγραφές ({len(df_rem_clean)})"), True),
-        ('good_removals', f"💎 Καλές Διαγραφές Ιστορικού ({len(df_good_past_removals)})", True),
-        ('additions',     f"🎉 Additions ({len(df_winbacks)})",                     False),
+        ('pending',       f"⏳ Προς Τιμολόγηση ({_cnt_pending})",         False),
+        ('billed',        f"🚚 Τιμολογημένες ({_cnt_billed})",               False),
+        ('ekkremeis',     f"📞 Εκκρεμείς ({_cnt_ekkremeis})",           True),
+        ('removals',      ("⚠️ Διαγραφές" if is_assistant_mode else f"⚠️ Διαγραφές ({_cnt_removals})"), True),
+        ('good_removals', f"💎 Καλές Διαγραφές Ιστορικού ({_cnt_good_removals})", True),
+        ('additions',     f"🎉 Additions ({_cnt_additions})",                     False),
         ('today',         "⭐ Σήμερα",                                              True),
-        ('adjustments',   f"⚙️ Adjustments ({len(df_adjustments)})",                False),
-        ('credit_check',  f"🏦 Πιστωτικός Έλεγχος ({len(df_empty_status)})",        True),
+        ('adjustments',   f"⚙️ Adjustments ({_cnt_adjustments})",                False),
+        ('credit_check',  f"🏦 Πιστωτικός Έλεγχος ({_cnt_credit_check})",        True),
     ]
     _visible_tab_defs = [t for t in _tab_defs if (t[2] or not is_assistant_mode)]
     tab_idx = {key: i for i, (key, _, _) in enumerate(_visible_tab_defs)}
