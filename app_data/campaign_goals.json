@@ -1,11 +1,11 @@
 {
   "202608": {
     "sales": 29873.0,
-    "actives": 0,
-    "removals": 0,
-    "stencil_growth": 0,
+    "actives": 391,
+    "removals": 35,
+    "stencil_growth": -9,
     "debt": 0.0,
-    "hidden_removals": 0
+    "hidden_removals": 7
   },
   "_forecast_history": {
     "202608": {
