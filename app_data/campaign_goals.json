@@ -6,5 +6,10 @@
     "stencil_growth": 0,
     "debt": 0.0,
     "hidden_removals": 0
+  },
+  "_forecast_history": {
+    "202608": {
+      "2026-08-26": 32230.55
+    }
   }
 }
