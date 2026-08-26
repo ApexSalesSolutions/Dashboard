@@ -11,6 +11,7 @@ import tempfile
 import calendar
 import os
 import json
+import base64
 
 # Προαιρετικό import για το PDF (Safe loading)
 try:
@@ -1006,6 +1007,102 @@ def fetch_sheet_data(url):
     df_members = pd.read_excel(xls, sheet_name=3)
     return df_sales, df_todo, df_removals, df_members
 
+# =========================================================================
+# GITHUB REPO ΩΣ ΜΟΝΙΜΗ ΑΠΟΘΗΚΗ ΣΤΟΧΩΝ/ΣΗΜΕΙΩΣΕΩΝ (αντί για τοπικό αρχείο)
+# ΚΡΙΣΙΜΟ: το Streamlit Cloud έχει "ephemeral" filesystem — όταν η εφαρμογή
+# μπει σε sleep και ξυπνήσει ξανά (ή γίνει redeploy), ό,τι γράφτηκε τοπικά
+# (campaign_goals.json) χάνεται. Το GitHub repo όμως ΕΠΙΒΙΩΝΕΙ πάντα.
+# Αρχικά δοκιμάσαμε Google Sheets, αλλά το Google Cloud μπλόκαρε τη
+# δημιουργία service account key (πολιτική οργανισμού) — το GitHub API με
+# ένα απλό Personal Access Token είναι πολύ πιο εύκολο setup, και το
+# χρησιμοποιείς ήδη για το ίδιο το deployment.
+# Αποθηκεύουμε σε ΞΕΧΩΡΙΣΤΟ branch ("app-data", όχι το "main") ώστε οι
+# αυτόματες αποθηκεύσεις (σε κάθε σημείωση/αποτέλεσμα κλήσης) να ΜΗΝ
+# πυροδοτούν νέο deploy στο Streamlit Cloud, που παρακολουθεί μόνο το main.
+# Αν δεν έχει ρυθμιστεί ακόμα το token, γίνεται ΑΥΤΟΜΑΤΗ υποχώρηση
+# (fallback) στο τοπικό αρχείο — καμία λειτουργία δεν σπάει.
+# =========================================================================
+GITHUB_DATA_PATH = "app_data/campaign_goals.json"
+GITHUB_DATA_BRANCH = "app-data"
+
+def _github_config():
+    try:
+        cfg = st.secrets.get("github", {})
+        token = cfg.get("token")
+        repo = cfg.get("repo")  # π.χ. "ApexSalesSolutions/Dashboard"
+        if not token or not repo:
+            return None
+        return {"token": token, "repo": repo,
+                "headers": {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}}
+    except Exception:
+        return None
+
+@st.cache_resource(show_spinner=False)
+def _github_ensure_branch():
+    """Δημιουργεί το branch αποθήκευσης (μία φορά, αν δεν υπάρχει ήδη)."""
+    cfg = _github_config()
+    if cfg is None:
+        return False
+    repo, headers = cfg["repo"], cfg["headers"]
+    try:
+        check = requests.get(f"https://api.github.com/repos/{repo}/branches/{GITHUB_DATA_BRANCH}", headers=headers)
+        if check.status_code == 200:
+            return True
+        main_ref = requests.get(f"https://api.github.com/repos/{repo}/git/ref/heads/main", headers=headers)
+        if main_ref.status_code != 200:
+            return False
+        sha = main_ref.json()["object"]["sha"]
+        create = requests.post(
+            f"https://api.github.com/repos/{repo}/git/refs", headers=headers,
+            json={"ref": f"refs/heads/{GITHUB_DATA_BRANCH}", "sha": sha}
+        )
+        return create.status_code == 201
+    except Exception:
+        return False
+
+def gsheet_storage_available():
+    """Το όνομα διατηρήθηκε για συμβατότητα με τα σημεία που το καλούν ήδη —
+    τώρα ελέγχει τη διαθεσιμότητα του GitHub-based storage."""
+    return _github_config() is not None and _github_ensure_branch()
+
+def _github_load_goals():
+    cfg = _github_config()
+    if cfg is None or not _github_ensure_branch():
+        return None
+    try:
+        url = f"https://api.github.com/repos/{cfg['repo']}/contents/{GITHUB_DATA_PATH}"
+        resp = requests.get(url, headers=cfg["headers"], params={"ref": GITHUB_DATA_BRANCH})
+        if resp.status_code == 200:
+            content = base64.b64decode(resp.json()["content"]).decode("utf-8")
+            return json.loads(content) if content.strip() else {}
+        elif resp.status_code == 404:
+            return {}  # δεν έχει αποθηκευτεί τίποτα ακόμα — φυσιολογικό την πρώτη φορά
+    except Exception:
+        pass
+    return None
+
+def _github_save_goals(goals):
+    cfg = _github_config()
+    if cfg is None or not _github_ensure_branch():
+        return False
+    try:
+        url = f"https://api.github.com/repos/{cfg['repo']}/contents/{GITHUB_DATA_PATH}"
+        get_resp = requests.get(url, headers=cfg["headers"], params={"ref": GITHUB_DATA_BRANCH})
+        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+        content_str = json.dumps(goals, ensure_ascii=False, indent=2)
+        content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+        payload = {
+            "message": "Ενημέρωση στόχων/σημειώσεων εφαρμογής",
+            "content": content_b64,
+            "branch": GITHUB_DATA_BRANCH,
+        }
+        if sha:
+            payload["sha"] = sha
+        put_resp = requests.put(url, headers=cfg["headers"], json=payload)
+        return put_resp.status_code in (200, 201)
+    except Exception:
+        return False
+
 # === CACHED: campaign_stats + tier_basket_history ===
 # Το πιο ακριβό κομμάτι μετά το Monte Carlo — διατρέχει ΟΛΕΣ τις ιστορικές
 # καμπάνιες × όλα τα μέλη. Εξαρτάται ΜΟΝΟ από τα δεδομένα (df_sales_all,
@@ -1731,6 +1828,11 @@ try:
     GOALS_FILE = "campaign_goals.json"
 
     def load_goals():
+        # Πρώτα δοκιμάζει GitHub (επιβιώνει σε sleep/redeploy) — αν δεν έχει
+        # ρυθμιστεί ή αποτύχει, πέφτει αυτόματα στο τοπικό αρχείο.
+        result = _github_load_goals()
+        if result is not None:
+            return result
         if os.path.exists(GOALS_FILE):
             try:
                 with open(GOALS_FILE, "r", encoding="utf-8") as f:
@@ -1740,6 +1842,10 @@ try:
         return {}
 
     def save_goals(goals):
+        if _github_save_goals(goals):
+            return
+        # Fallback: τοπικό αρχείο (καλύπτει τουλάχιστον την τρέχουσα session
+        # αν το GitHub δεν έχει ρυθμιστεί ή αποτύχει προσωρινά)
         with open(GOALS_FILE, "w", encoding="utf-8") as f:
             json.dump(goals, f, ensure_ascii=False, indent=2)
 
@@ -1857,6 +1963,10 @@ try:
         st.sidebar.markdown("---")
         st.sidebar.subheader("🎯 Στόχοι Καμπάνιας")
         st.sidebar.caption("Συμπλήρωσε μία φορά — αποθηκεύονται αυτόματα ανά καμπάνια.")
+        if gsheet_storage_available():
+            st.sidebar.caption("☁️ Μόνιμη αποθήκευση: ενεργή (GitHub) — επιβιώνει σε sleep/redeploy.")
+        else:
+            st.sidebar.caption("⚠️ Μόνιμη αποθήκευση ανενεργή — προσωρινή αποθήκευση, θα χαθεί όταν κοιμηθεί η εφαρμογή.")
 
         goal_sales   = st.sidebar.number_input("💰 Στόχος Πωλήσεων (€)",  min_value=0.0, step=100.0,
                                                 value=float(saved.get("sales",   32226.0)))
