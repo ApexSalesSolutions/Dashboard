@@ -12,6 +12,7 @@ import calendar
 import os
 import json
 import base64
+import time
 
 # Προαιρετικό import για το PDF (Safe loading)
 try:
@@ -1081,27 +1082,44 @@ def _github_load_goals():
         pass
     return None
 
-def _github_save_goals(goals):
+def _github_save_goals(goals, _retries=3):
+    """
+    Αποθηκεύει στο GitHub, με ΕΠΑΝΑΛΗΨΗ σε περίπτωση σύγκρουσης (409) —
+    συμβαίνει όταν δύο αποθηκεύσεις γίνονται γρήγορα η μία μετά την άλλη
+    (π.χ. σημείωση αμέσως μετά από αποτέλεσμα κλήσης) και η δεύτερη έχει
+    "μπαγιάτικη" έκδοση (sha) του αρχείου. Χωρίς αυτό, η δεύτερη αποθήκευση
+    απλά απέτυχε σιωπηλά και έπεφτε στο τοπικό (προσωρινό) αρχείο.
+    """
     cfg = _github_config()
     if cfg is None or not _github_ensure_branch():
         return False
-    try:
-        url = f"https://api.github.com/repos/{cfg['repo']}/contents/{GITHUB_DATA_PATH}"
-        get_resp = requests.get(url, headers=cfg["headers"], params={"ref": GITHUB_DATA_BRANCH})
-        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
-        content_str = json.dumps(goals, ensure_ascii=False, indent=2)
-        content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
-        payload = {
-            "message": "Ενημέρωση στόχων/σημειώσεων εφαρμογής",
-            "content": content_b64,
-            "branch": GITHUB_DATA_BRANCH,
-        }
-        if sha:
-            payload["sha"] = sha
-        put_resp = requests.put(url, headers=cfg["headers"], json=payload)
-        return put_resp.status_code in (200, 201)
-    except Exception:
-        return False
+    url = f"https://api.github.com/repos/{cfg['repo']}/contents/{GITHUB_DATA_PATH}"
+    for attempt in range(_retries):
+        try:
+            get_resp = requests.get(url, headers=cfg["headers"], params={"ref": GITHUB_DATA_BRANCH})
+            sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+            content_str = json.dumps(goals, ensure_ascii=False, indent=2)
+            content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+            payload = {
+                "message": "Ενημέρωση στόχων/σημειώσεων εφαρμογής",
+                "content": content_b64,
+                "branch": GITHUB_DATA_BRANCH,
+            }
+            if sha:
+                payload["sha"] = sha
+            put_resp = requests.put(url, headers=cfg["headers"], json=payload)
+            if put_resp.status_code in (200, 201):
+                return True
+            if put_resp.status_code == 409 and attempt < _retries - 1:
+                time.sleep(0.4 * (attempt + 1))  # μικρή αναμονή πριν ξαναδοκιμάσει με φρέσκο sha
+                continue
+            return False
+        except Exception:
+            if attempt < _retries - 1:
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            return False
+    return False
 
 # === CACHED: campaign_stats + tier_basket_history ===
 # Το πιο ακριβό κομμάτι μετά το Monte Carlo — διατρέχει ΟΛΕΣ τις ιστορικές
