@@ -235,5 +235,6 @@
     "stencil_growth": 0,
     "debt": 0.0,
     "hidden_removals": 0
-  }
+  },
+  "_calibration_factor": 0.9589
 }
