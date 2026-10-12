@@ -235,7 +235,7 @@
     "sales": 32290.0,
     "actives": 392,
     "removals": 0,
-    "stencil_growth": 0,
+    "stencil_growth": -1,
     "debt": 0.0,
     "hidden_removals": 0
   },
